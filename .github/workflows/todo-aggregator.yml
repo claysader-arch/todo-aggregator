@@ -2,11 +2,10 @@ name: Todo Aggregator
 
 on:
   schedule:
-    # Run daily at 6:00 AM UTC (adjust timezone as needed)
-    - cron: '0 6 * * *'
-
-  # Allow manual triggering for testing
-  workflow_dispatch:
+    # Run at 9am and 5pm PT (UTC-8) on weekdays
+    - cron: '0 17 * * 1-5'  # 9am PT
+    - cron: '0 1 * * 2-6'   # 5pm PT (next day UTC)
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   aggregate-todos:
@@ -29,27 +28,29 @@ jobs:
 
       - name: Run todo aggregator
         env:
-          # Anthropic
+          # Required
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
-          # Notion
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
 
           # Slack
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CANVAS_ID: ${{ secrets.SLACK_CANVAS_ID }}
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
 
           # Zoom
           ZOOM_ACCOUNT_ID: ${{ secrets.ZOOM_ACCOUNT_ID }}
           ZOOM_CLIENT_ID: ${{ secrets.ZOOM_CLIENT_ID }}
           ZOOM_CLIENT_SECRET: ${{ secrets.ZOOM_CLIENT_SECRET }}
 
-          # Gmail/Google
-          GOOGLE_CREDENTIALS_PATH: ${{ secrets.GOOGLE_CREDENTIALS_PATH }}
+          # Gmail
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_LOOKBACK_DAYS: "1"
 
-          # Gemini (for Gmail Apps Script)
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Optional
+          NOTION_MEETINGS_DATABASE_ID: ${{ secrets.NOTION_MEETINGS_DATABASE_ID }}
+          MY_NAME: ${{ vars.MY_NAME }}
+          FILTER_MY_TODOS_ONLY: "true"
         run: |
           python src/orchestrator.py
 
@@ -57,6 +58,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aggregator-logs
+          name: aggregator-logs-${{ github.run_id }}
           path: '*.log'
           retention-days: 7

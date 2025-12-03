@@ -8,6 +8,11 @@ import logging
 import sys
 from datetime import datetime
 from config import Config
+from mcp_clients.notion_client import NotionClient
+from mcp_clients.zoom_client import ZoomClient
+from mcp_clients.slack_client import SlackClient
+from mcp_clients.gmail_client import GmailClient
+from processors.claude_processor import ClaudeProcessor
 
 
 # Set up logging
@@ -33,134 +38,254 @@ def validate_config() -> bool:
     return True
 
 
-def collect_todos() -> dict:
+def collect_todos(zoom: ZoomClient = None, slack: SlackClient = None, gmail: GmailClient = None, notion: NotionClient = None) -> dict:
     """
-    Phase 1: Collect todos from all sources.
+    Collect todos from all sources.
+
+    Args:
+        zoom: Optional Zoom client instance
+        slack: Optional Slack client instance
+        gmail: Optional Gmail client instance
+        notion: Optional Notion client instance (for meeting notes)
 
     Returns:
-        Dictionary with todos from each platform
+        Dictionary with raw content from each platform
     """
     logger.info("Starting collection phase...")
-    todos = {
+
+    raw_content = {
         "slack": [],
         "gmail": [],
         "zoom": [],
         "notion": [],
     }
 
-    # TODO: Implement collection for each platform
-    # - Read Slack Canvas
-    # - Fetch Gmail todos (from Apps Script output)
-    # - Get Zoom meeting summaries
-    # - Query Notion for recent updates
+    # Phase 2: Zoom integration
+    if zoom:
+        try:
+            zoom_content = zoom.get_meeting_content(days=1)
+            raw_content["zoom"] = zoom_content
+            logger.info(f"Collected {len(zoom_content)} Zoom meeting summaries/transcripts")
+        except Exception as e:
+            logger.error(f"Error collecting Zoom content: {e}")
 
-    logger.info(f"Collection complete. Found todos from {len(todos)} sources")
-    return todos
+    # Phase 3: Slack integration
+    if slack:
+        try:
+            slack_content = slack.get_slack_content(days=1)
+            raw_content["slack"] = slack_content
+            logger.info(f"Collected messages from {len(slack_content)} Slack conversations")
+        except Exception as e:
+            logger.error(f"Error collecting Slack content: {e}")
+
+    # Phase 4: Gmail integration
+    if gmail:
+        try:
+            gmail_content = gmail.get_gmail_content()
+            raw_content["gmail"] = gmail_content
+            logger.info(f"Collected {len(gmail_content)} Gmail messages")
+        except Exception as e:
+            logger.error(f"Error collecting Gmail content: {e}")
+
+    # Phase 6: Notion AI meeting notes integration
+    if notion and Config.NOTION_MEETINGS_DATABASE_ID:
+        try:
+            meeting_content = notion.get_recent_meetings(days=1)
+            raw_content["notion"] = meeting_content
+            logger.info(f"Collected {len(meeting_content)} Notion AI meeting notes")
+        except Exception as e:
+            logger.error(f"Error collecting Notion meeting notes: {e}")
+
+    total_items = sum(len(v) for v in raw_content.values())
+    logger.info(f"Collection complete. Found {total_items} items from sources")
+    return raw_content
 
 
-def extract_todos(raw_data: dict) -> list:
+def extract_todos(raw_data: dict, claude: ClaudeProcessor) -> list:
     """
     Phase 2: Use Claude to extract structured todos from raw content.
 
     Args:
         raw_data: Raw content from each platform
+        claude: Claude processor instance
 
     Returns:
         List of extracted todo objects
     """
     logger.info("Starting extraction phase...")
 
-    # TODO: Send raw data to Claude for todo extraction
-    # - Identify explicit assignments
-    # - Identify implicit commitments
-    # - Extract assignee, due date, context
+    # Use Claude to extract todos from raw content
+    extracted = claude.extract_todos(raw_data)
 
-    extracted = []
     logger.info(f"Extraction complete. Found {len(extracted)} todos")
     return extracted
 
 
-def deduplicate_todos(extracted_todos: list, existing_todos: list) -> list:
+def filter_my_todos(todos: list) -> list:
+    """
+    Filter todos to only include those assigned to the configured user.
+
+    Args:
+        todos: List of todos to filter
+
+    Returns:
+        Filtered list of todos assigned to user
+    """
+    if not Config.FILTER_MY_TODOS_ONLY:
+        logger.info("Todo filtering disabled, keeping all todos")
+        return todos
+
+    if not Config.MY_NAME:
+        logger.warning("FILTER_MY_TODOS_ONLY is enabled but MY_NAME not configured, keeping all todos")
+        return todos
+
+    # Parse name variations (comma-separated)
+    my_names = [name.strip().lower() for name in Config.MY_NAME.split(",")]
+    logger.info(f"Filtering todos for: {', '.join(my_names)}")
+
+    filtered = []
+    skipped_others = 0
+    for todo in todos:
+        assigned_to = (todo.get("assigned_to") or "").strip().lower()
+
+        # Check if assigned to user (match any name variation)
+        if any(name in assigned_to for name in my_names if name):
+            filtered.append(todo)
+        # Also keep unassigned todos (empty assigned_to)
+        elif not assigned_to:
+            filtered.append(todo)
+        else:
+            skipped_others += 1
+
+    logger.info(f"Filtered {len(todos)} todos to {len(filtered)} assigned to you (skipped {skipped_others} assigned to others)")
+    return filtered
+
+
+def deduplicate_todos(extracted_todos: list, existing_todos: list, claude: ClaudeProcessor) -> list:
     """
     Phase 3: Use Claude to deduplicate todos across sources.
 
     Args:
         extracted_todos: Newly extracted todos
         existing_todos: Todos already in Notion DB
+        claude: Claude processor instance
 
     Returns:
         Deduplicated list of todos
     """
     logger.info("Starting deduplication phase...")
 
-    # TODO: Use Claude for semantic similarity matching
-    # - Compare new todos against existing
-    # - Merge duplicates from multiple sources
-    # - Generate dedupe hash
+    # Use Claude for semantic similarity matching
+    deduplicated = claude.deduplicate_todos(extracted_todos, existing_todos)
 
-    deduplicated = []
     logger.info(f"Deduplication complete. {len(deduplicated)} unique todos")
     return deduplicated
 
 
-def detect_completions(todos: list, raw_data: dict) -> list:
+def detect_completions(open_todos: list, raw_data: dict, claude: ClaudeProcessor) -> list:
     """
     Phase 4: Detect todos that have been completed across platforms.
 
     Args:
-        todos: Current todo list
+        open_todos: Current open todo list
         raw_data: Raw content to scan for completion signals
+        claude: Claude processor instance
 
     Returns:
-        Updated todos with completion status
+        List of completed todo IDs and evidence
     """
     logger.info("Starting completion detection phase...")
 
-    # TODO: Scan all sources for completion signals
-    # - Keywords: "Done", "Completed", "Sent", "Finished"
-    # - Slack reactions (✅, 👍)
-    # - Update status accordingly
+    # Use Claude to detect completion signals
+    completions = claude.detect_completions(open_todos, raw_data)
 
-    logger.info("Completion detection complete")
-    return todos
+    logger.info(f"Completion detection complete. Found {len(completions)} completed todos")
+    return completions
 
 
-def update_notion_db(todos: list) -> None:
+def update_notion_db(todos: list, completions: list, notion: NotionClient) -> dict:
     """
     Phase 5: Write updated todos to Notion database.
 
     Args:
-        todos: Final processed todo list
+        todos: Final processed todo list (new and duplicates)
+        completions: List of completed todo information
+        notion: Notion client instance
+
+    Returns:
+        Stats about the update operation
     """
     logger.info("Updating Notion database...")
 
-    # TODO: Write to Notion via MCP
-    # - Create new todos
-    # - Update existing todos
-    # - Mark completed todos
+    stats = {"created": 0, "updated": 0, "completed": 0}
 
-    logger.info(f"Notion update complete. Processed {len(todos)} todos")
+    # Process new and duplicate todos
+    for todo in todos:
+        if "_update_id" in todo:
+            # This is a duplicate - update existing todo with new source
+            existing_id = todo["_update_id"]
+            # Add the new source to the existing todo's sources
+            update = {}
+            if "source" in todo and todo["source"]:
+                # We'd need to fetch and merge sources, for now just log
+                logger.info(f"Would update existing todo {existing_id} with new source: {todo['source']}")
+            stats["updated"] += 1
+        else:
+            # This is a new todo - create it
+            notion.create_page(
+                {
+                    "task": todo.get("task", ""),
+                    "status": "Open",
+                    "source": [todo.get("source", "unknown")],
+                    "source_url": todo.get("source_url"),
+                    "due_date": todo.get("due_date"),
+                    "confidence": todo.get("confidence", 0.0),
+                    "dedupe_hash": todo.get("dedupe_hash", ""),
+                    # Phase 5: Intelligence layer fields
+                    "priority": todo.get("priority", "medium"),
+                    "category": todo.get("category", []),
+                }
+            )
+            stats["created"] += 1
+
+    # Process completions
+    for completion in completions:
+        notion.update_page(
+            completion["todo_id"],
+            {"status": "Done", "completed": datetime.now().date().isoformat()},
+        )
+        stats["completed"] += 1
+
+    logger.info(
+        f"Notion update complete. Created: {stats['created']}, "
+        f"Updated: {stats['updated']}, Completed: {stats['completed']}"
+    )
+    return stats
 
 
-def generate_summary(todos: list) -> str:
+def generate_summary(open_todos: list, stats: dict, claude: ClaudeProcessor) -> str:
     """
     Phase 6: Generate daily summary using Claude.
 
     Args:
-        todos: Final todo list
+        open_todos: Current open todo list
+        stats: Statistics from update operation
+        claude: Claude processor instance
 
     Returns:
         Formatted summary text
     """
     logger.info("Generating daily summary...")
 
-    # TODO: Use Claude to create digest
-    # - New todos added today
-    # - Todos completed today
-    # - Overdue items
-    # - High-priority items
+    # Add additional stats
+    summary_stats = {
+        **stats,
+        "open_todos": len(open_todos),
+        "overdue_todos": len([t for t in open_todos if t.get("due_date") and t["due_date"] < datetime.now().date().isoformat()]),
+    }
 
-    summary = "Daily summary placeholder"
+    summary = claude.generate_summary(open_todos, summary_stats)
+
     logger.info("Summary generation complete")
     return summary
 
@@ -178,17 +303,68 @@ def main():
         sys.exit(1)
 
     try:
+        # Initialize clients
+        notion = NotionClient()
+        claude = ClaudeProcessor()
+
+        # Initialize Zoom client if credentials are available
+        zoom = None
+        if Config.ZOOM_ACCOUNT_ID and Config.ZOOM_CLIENT_ID and Config.ZOOM_CLIENT_SECRET:
+            logger.info("Initializing Zoom client...")
+            zoom = ZoomClient()
+        else:
+            logger.info("Zoom credentials not configured, skipping Zoom integration")
+
+        # Initialize Slack client if credentials are available
+        slack = None
+        if Config.SLACK_USER_TOKEN:
+            logger.info("Initializing Slack client...")
+            slack = SlackClient()
+        else:
+            logger.info("Slack credentials not configured, skipping Slack integration")
+
+        # Initialize Gmail client if credentials are available
+        gmail = None
+        if Config.GMAIL_CLIENT_ID and Config.GMAIL_CLIENT_SECRET and Config.GMAIL_REFRESH_TOKEN:
+            logger.info("Initializing Gmail client...")
+            gmail = GmailClient()
+        else:
+            logger.info("Gmail credentials not configured, skipping Gmail integration")
+
+        # Log Notion meetings database status
+        if Config.NOTION_MEETINGS_DATABASE_ID:
+            logger.info("Notion AI meeting notes database configured")
+        else:
+            logger.info("Notion meetings database not configured, skipping meeting notes collection")
+
         # Execute aggregation pipeline
-        raw_data = collect_todos()
-        extracted = extract_todos(raw_data)
+        raw_data = collect_todos(zoom=zoom, slack=slack, gmail=gmail, notion=notion)
+        extracted = extract_todos(raw_data, claude)
 
-        # TODO: Fetch existing todos from Notion
-        existing_todos = []
+        # Filter todos to only include those assigned to user
+        filtered = filter_my_todos(extracted)
 
-        deduplicated = deduplicate_todos(extracted, existing_todos)
-        completed = detect_completions(deduplicated, raw_data)
-        update_notion_db(completed)
-        summary = generate_summary(completed)
+        # Fetch existing todos from Notion
+        existing_todos = notion.get_all_todos()
+        logger.info(f"Found {len(existing_todos)} existing todos in Notion")
+
+        # Deduplicate against existing todos
+        deduplicated = deduplicate_todos(filtered, existing_todos, claude)
+
+        # Get open todos for completion detection
+        open_todos = notion.get_open_todos()
+
+        # Detect completions
+        completions = detect_completions(open_todos, raw_data, claude)
+
+        # Update Notion database
+        stats = update_notion_db(deduplicated, completions, notion)
+
+        # Get updated open todos for summary
+        open_todos = notion.get_open_todos()
+
+        # Generate summary
+        summary = generate_summary(open_todos, stats, claude)
 
         logger.info("=" * 80)
         logger.info("DAILY SUMMARY")

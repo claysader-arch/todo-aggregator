@@ -46,9 +46,9 @@ Edit `.env` and add your API keys:
 - `NOTION_DATABASE_ID` - ID of your todo database
 
 #### Later Phases:
-- `SLACK_BOT_TOKEN` - From Slack app configuration
+- `SLACK_USER_TOKEN` - From Slack app configuration (xoxp-...)
 - `ZOOM_*` - From Zoom Marketplace app
-- `GEMINI_API_KEY` - From https://ai.google.dev
+- `GMAIL_*` - From Google Cloud Console OAuth credentials
 
 ### 3. Set Up Notion Database
 
@@ -111,11 +111,11 @@ todo-aggregator/
 
 ## Implementation Phases
 
-- [x] **Phase 1**: Foundation (Notion setup, basic orchestrator)
-- [ ] **Phase 2**: Zoom integration
-- [ ] **Phase 3**: Slack integration
-- [ ] **Phase 4**: Gmail integration
-- [ ] **Phase 5**: Intelligence layer (deduplication, completion detection)
+- [x] **Phase 1**: Foundation (Notion setup, basic orchestrator) - [Setup Guide](PHASE1_SETUP.md)
+- [x] **Phase 2**: Zoom integration (meeting summaries/transcripts) - [Setup Guide](PHASE2_SETUP.md) | [Complete](PHASE2_COMPLETE.md)
+- [x] **Phase 3**: Slack integration - [Setup Guide](PHASE3_SETUP.md)
+- [x] **Phase 4**: Gmail integration - [Setup Guide](PHASE4_SETUP.md) | [Complete](PHASE4_COMPLETE.md)
+- [ ] **Phase 5**: Intelligence layer enhancements - [Setup Guide](PHASE5_SETUP.md)
 - [ ] **Phase 6**: Scheduling and output configuration
 
 ## Development
@@ -148,9 +148,9 @@ Logs are written to:
 - Canvas is read via MCP server
 
 ### Gmail
-- Uses Google Apps Script + Gemini API
+- Uses Gmail API with OAuth 2.0 authentication
 - Processes emails from last 24 hours
-- Outputs to Google Sheet or Notion
+- Extracts todos via Claude (same as other sources)
 
 ### Zoom
 - Best API support for AI summaries
