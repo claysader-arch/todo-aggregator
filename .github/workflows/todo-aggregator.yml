@@ -26,6 +26,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug secrets
+        run: |
+          echo "Checking if secrets are set..."
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then echo "ANTHROPIC_API_KEY is set"; else echo "ANTHROPIC_API_KEY is EMPTY"; fi
+          if [ -n "${{ secrets.NOTION_API_KEY }}" ]; then echo "NOTION_API_KEY is set"; else echo "NOTION_API_KEY is EMPTY"; fi
+          if [ -n "${{ secrets.NOTION_DATABASE_ID }}" ]; then echo "NOTION_DATABASE_ID is set"; else echo "NOTION_DATABASE_ID is EMPTY"; fi
+
       - name: Run todo aggregator
         env:
           # Required
