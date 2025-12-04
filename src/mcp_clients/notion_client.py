@@ -120,6 +120,37 @@ class NotionClient:
             logger.error(f"Error updating Notion page: {e}")
             raise
 
+    def add_comment(self, page_id: str, comment_text: str) -> Dict[str, Any]:
+        """
+        Add a comment to a Notion page.
+
+        Args:
+            page_id: Notion page ID to comment on
+            comment_text: Text content of the comment
+
+        Returns:
+            Created comment data
+        """
+        url = f"{self.base_url}/comments"
+
+        payload = {
+            "parent": {"page_id": page_id},
+            "rich_text": [{"type": "text", "text": {"content": comment_text}}],
+        }
+
+        try:
+            response = requests.post(url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+
+            logger.debug(f"Added comment to Notion page: {page_id}")
+            return data
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Error adding comment to Notion page {page_id}: {e}")
+            # Don't raise - comments are nice-to-have, not critical
+            return {}
+
     def _parse_page(self, page: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parse Notion page into simplified todo object.

@@ -211,9 +211,60 @@ class GmailClient:
 
         return query
 
+    def _format_thread(self, thread: Dict) -> str:
+        """
+        Format an entire email thread for Claude processing.
+
+        Args:
+            thread: Full thread object from Gmail API
+
+        Returns:
+            Formatted string with all messages in chronological order
+        """
+        messages = thread.get("messages", [])
+        if not messages:
+            return ""
+
+        # Get subject from first message
+        first_payload = messages[0].get("payload", {})
+        first_headers = first_payload.get("headers", [])
+        subject = self._get_header_value(first_headers, "Subject") or "(no subject)"
+
+        # Format each message in the thread (oldest first)
+        formatted_messages = []
+        for message in messages:
+            payload = message.get("payload", {})
+            headers = payload.get("headers", [])
+
+            from_addr = self._get_header_value(headers, "From")
+            date_str = self._get_header_value(headers, "Date")
+
+            # Parse and format date
+            try:
+                date_obj = parsedate_to_datetime(date_str)
+                formatted_date = date_obj.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                formatted_date = date_str[:20] if date_str else "unknown"
+
+            # Get body
+            body = self._get_message_body(payload)
+
+            # Truncate very long bodies
+            max_body_length = 2000
+            if len(body) > max_body_length:
+                body = body[:max_body_length] + "\n... [truncated]"
+
+            formatted_messages.append(f"[{formatted_date}] From: {from_addr}\n{body}")
+
+        # Combine into thread format
+        header = f"=== Gmail Thread: {subject} ==="
+        thread_content = "\n---\n".join(formatted_messages)
+
+        return f"{header}\n{thread_content}"
+
     def get_gmail_content(self, days: int = None) -> List[Dict[str, Any]]:
         """
-        Get formatted emails from the last N days.
+        Get formatted emails from the last N days, grouped by thread.
 
         This is the main method called by the orchestrator.
 
@@ -245,39 +296,60 @@ class GmailClient:
             messages = results.get("messages", [])
             logger.info(f"Found {len(messages)} emails matching query")
 
-            # Fetch full content for each message
+            # Group messages by thread ID
+            thread_ids = set()
             for msg_ref in messages:
+                thread_ids.add(msg_ref.get("threadId"))
+
+            logger.info(f"Grouped into {len(thread_ids)} email threads")
+
+            # Fetch full thread content for each unique thread
+            for thread_id in thread_ids:
                 try:
-                    message = service.users().messages().get(
+                    thread = service.users().threads().get(
                         userId="me",
-                        id=msg_ref["id"],
+                        id=thread_id,
                         format="full"
                     ).execute()
 
-                    message_id = msg_ref["id"]
-                    payload = message.get("payload", {})
-                    headers = payload.get("headers", [])
+                    thread_messages = thread.get("messages", [])
+                    if not thread_messages:
+                        continue
 
-                    # Get header values
-                    from_addr = self._get_header_value(headers, "From")
-                    subject = self._get_header_value(headers, "Subject") or "(no subject)"
+                    # Get metadata from most recent message
+                    latest_msg = thread_messages[-1]
+                    latest_id = latest_msg.get("id")
+                    latest_payload = latest_msg.get("payload", {})
+                    latest_headers = latest_payload.get("headers", [])
+
+                    from_addr = self._get_header_value(latest_headers, "From")
+                    subject = self._get_header_value(latest_headers, "Subject") or "(no subject)"
 
                     # Detect if this is a Zoom email for source re-attribution
-                    is_zoom_email = self._detect_zoom_email(from_addr)
+                    # Check if ANY message in thread is from Zoom
+                    is_zoom_email = any(
+                        self._detect_zoom_email(
+                            self._get_header_value(
+                                msg.get("payload", {}).get("headers", []), "From"
+                            )
+                        )
+                        for msg in thread_messages
+                    )
                     source = "zoom" if is_zoom_email else "gmail"
 
-                    # Format the email text
-                    formatted_text = self._format_email(message)
+                    # Format the full thread
+                    formatted_text = self._format_thread(thread)
 
-                    # Build URL
-                    source_url = self._build_message_url(message_id)
+                    # Build URL to latest message in thread
+                    source_url = self._build_message_url(latest_id)
 
                     content.append({
                         "text": formatted_text,
                         "source_url": source_url,
                         "source": source,
                         "metadata": {
-                            "message_id": message_id,
+                            "thread_id": thread_id,
+                            "message_count": len(thread_messages),
                             "subject": subject,
                             "from": from_addr,
                             "is_zoom_email": is_zoom_email,
@@ -285,17 +357,17 @@ class GmailClient:
                     })
 
                     if is_zoom_email:
-                        logger.debug(f"Detected Zoom email (re-attributed): {subject}")
+                        logger.debug(f"Detected Zoom thread (re-attributed): {subject}")
 
                 except HttpError as e:
-                    logger.warning(f"Error fetching message {msg_ref['id']}: {e}")
+                    logger.warning(f"Error fetching thread {thread_id}: {e}")
                     continue
 
         except HttpError as e:
             logger.error(f"Error listing Gmail messages: {e}")
             raise
 
-        logger.info(f"Collected {len(content)} Gmail messages ({sum(1 for c in content if c['source'] == 'zoom')} from Zoom)")
+        logger.info(f"Collected {len(content)} Gmail threads ({sum(1 for c in content if c['source'] == 'zoom')} from Zoom)")
         return content
 
     def test_connection(self) -> bool:

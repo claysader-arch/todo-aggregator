@@ -6,7 +6,9 @@ storage of todos from multiple platforms.
 
 import logging
 import sys
+import time
 from datetime import datetime
+from contextlib import contextmanager
 from config import Config
 from mcp_clients.notion_client import NotionClient
 from mcp_clients.zoom_client import ZoomClient
@@ -26,6 +28,18 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def timed_phase(phase_name: str):
+    """Context manager to time and log phase duration."""
+    start = time.time()
+    logger.info(f"Starting {phase_name}...")
+    try:
+        yield
+    finally:
+        duration = time.time() - start
+        logger.info(f"Completed {phase_name} in {duration:.1f}s")
 
 
 def validate_config() -> bool:
@@ -51,8 +65,6 @@ def collect_todos(zoom: ZoomClient = None, slack: SlackClient = None, gmail: Gma
     Returns:
         Dictionary with raw content from each platform
     """
-    logger.info("Starting collection phase...")
-
     raw_content = {
         "slack": [],
         "gmail": [],
@@ -112,8 +124,6 @@ def extract_todos(raw_data: dict, claude: ClaudeProcessor) -> list:
     Returns:
         List of extracted todo objects
     """
-    logger.info("Starting extraction phase...")
-
     # Use Claude to extract todos from raw content
     extracted = claude.extract_todos(raw_data)
 
@@ -173,8 +183,6 @@ def deduplicate_todos(extracted_todos: list, existing_todos: list, claude: Claud
     Returns:
         Deduplicated list of todos
     """
-    logger.info("Starting deduplication phase...")
-
     # Use Claude for semantic similarity matching
     deduplicated = claude.deduplicate_todos(extracted_todos, existing_todos)
 
@@ -194,8 +202,6 @@ def detect_completions(open_todos: list, raw_data: dict, claude: ClaudeProcessor
     Returns:
         List of completed todo IDs and evidence
     """
-    logger.info("Starting completion detection phase...")
-
     # Use Claude to detect completion signals
     completions = claude.detect_completions(open_todos, raw_data)
 
@@ -248,13 +254,27 @@ def update_notion_db(todos: list, completions: list, notion: NotionClient) -> di
             )
             stats["created"] += 1
 
-    # Process completions
+    # Process completions with confidence-based status
     for completion in completions:
+        confidence = completion.get("confidence", 0)
+        threshold = Config.COMPLETION_CONFIDENCE_THRESHOLD
+        status = "Done" if confidence >= threshold else "Done?"
+        evidence = completion.get("evidence", "")
+
         notion.update_page(
             completion["todo_id"],
-            {"status": "Done", "completed": datetime.now().date().isoformat()},
+            {"status": status, "completed": datetime.now().date().isoformat()},
         )
         stats["completed"] += 1
+
+        # Add comment with completion evidence
+        if status == "Done":
+            comment = f"✓ Auto-completed ({confidence:.0%}): \"{evidence[:200]}\"" if evidence else f"✓ Auto-completed ({confidence:.0%})"
+        else:
+            comment = f"? Needs review ({confidence:.0%}): \"{evidence[:200]}\"" if evidence else f"? Needs review ({confidence:.0%})"
+            logger.info(f"Low confidence completion ({confidence:.0%}): {completion.get('todo_id')} - {evidence[:50] if evidence else 'no evidence'}")
+
+        notion.add_comment(completion["todo_id"], comment)
 
     logger.info(
         f"Notion update complete. Created: {stats['created']}, "
@@ -337,34 +357,34 @@ def main():
         else:
             logger.info("Notion meetings database not configured, skipping meeting notes collection")
 
-        # Execute aggregation pipeline
-        raw_data = collect_todos(zoom=zoom, slack=slack, gmail=gmail, notion=notion)
-        extracted = extract_todos(raw_data, claude)
+        # Execute aggregation pipeline with timing
+        run_start = time.time()
 
-        # Filter todos to only include those assigned to user
-        filtered = filter_my_todos(extracted)
+        with timed_phase("collection"):
+            raw_data = collect_todos(zoom=zoom, slack=slack, gmail=gmail, notion=notion)
 
-        # Fetch existing todos from Notion
-        existing_todos = notion.get_all_todos()
-        logger.info(f"Found {len(existing_todos)} existing todos in Notion")
+        with timed_phase("extraction"):
+            extracted = extract_todos(raw_data, claude)
+            filtered = filter_my_todos(extracted)
 
-        # Deduplicate against existing todos
-        deduplicated = deduplicate_todos(filtered, existing_todos, claude)
+        with timed_phase("deduplication"):
+            existing_todos = notion.get_all_todos()
+            logger.info(f"Found {len(existing_todos)} existing todos in Notion")
+            deduplicated = deduplicate_todos(filtered, existing_todos, claude)
 
-        # Get open todos for completion detection
-        open_todos = notion.get_open_todos()
+        with timed_phase("completion detection"):
+            open_todos = notion.get_open_todos()
+            completions = detect_completions(open_todos, raw_data, claude)
 
-        # Detect completions
-        completions = detect_completions(open_todos, raw_data, claude)
+        with timed_phase("Notion update"):
+            stats = update_notion_db(deduplicated, completions, notion)
 
-        # Update Notion database
-        stats = update_notion_db(deduplicated, completions, notion)
+        with timed_phase("summary generation"):
+            open_todos = notion.get_open_todos()
+            summary = generate_summary(open_todos, stats, claude)
 
-        # Get updated open todos for summary
-        open_todos = notion.get_open_todos()
-
-        # Generate summary
-        summary = generate_summary(open_todos, stats, claude)
+        total_duration = time.time() - run_start
+        logger.info(f"Total pipeline duration: {total_duration:.1f}s")
 
         logger.info("=" * 80)
         logger.info("DAILY SUMMARY")

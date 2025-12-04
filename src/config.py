@@ -42,12 +42,17 @@ class Config:
 
     # Filtering settings
     MY_NAME: str = os.getenv("MY_NAME", "")  # Comma-separated list of name variations (e.g., "Clay,clay,Clay Sader")
+    MY_SLACK_USERNAME: str = os.getenv("MY_SLACK_USERNAME", "")  # Slack display name (e.g., "Clay Sader")
+    MY_EMAIL: str = os.getenv("MY_EMAIL", "")  # Email address for Gmail matching (e.g., "clay@company.com")
     FILTER_MY_TODOS_ONLY: bool = os.getenv("FILTER_MY_TODOS_ONLY", "true").lower() == "true"
 
     # Phase 5: Intelligence Layer Feature Flags
     ENABLE_PRIORITY_SCORING: bool = os.getenv("ENABLE_PRIORITY_SCORING", "true").lower() == "true"
     ENABLE_CATEGORY_TAGGING: bool = os.getenv("ENABLE_CATEGORY_TAGGING", "true").lower() == "true"
     ENABLE_DUE_DATE_INFERENCE: bool = os.getenv("ENABLE_DUE_DATE_INFERENCE", "true").lower() == "true"
+
+    # Completion detection settings
+    COMPLETION_CONFIDENCE_THRESHOLD: float = float(os.getenv("COMPLETION_CONFIDENCE_THRESHOLD", "0.85"))
 
     # Priority keywords (comma-separated)
     HIGH_PRIORITY_KEYWORDS: str = os.getenv("HIGH_PRIORITY_KEYWORDS", "urgent,asap,critical,today,p0,immediately,blocker")

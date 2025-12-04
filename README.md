@@ -60,7 +60,7 @@ Create a Notion database with these properties:
 | Property | Type | Description |
 |----------|------|-------------|
 | Task | Title | Todo description |
-| Status | Select | Open / In Progress / Done |
+| Status | Select | Open / In Progress / Done / Done? |
 | Source | Multi-select | slack / gmail / zoom / notion |
 | Source URL | URL | Clickable link to original message |
 | Assigned To | Rich text | Who owns this todo |
@@ -172,12 +172,15 @@ FILTER_MY_TODOS_ONLY=true
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FILTER_MY_TODOS_ONLY` | `true` | Only include todos assigned to you |
-| `MY_NAME` | - | Comma-separated name variations |
+| `MY_NAME` | - | Comma-separated name variations for todo ownership |
+| `MY_SLACK_USERNAME` | - | Your Slack display name (for accurate extraction) |
+| `MY_EMAIL` | - | Your email address (for Gmail matching) |
 | `GMAIL_LOOKBACK_DAYS` | `1` | Days of email history to scan |
 | `ENABLE_PRIORITY_SCORING` | `true` | AI priority detection |
 | `ENABLE_CATEGORY_TAGGING` | `true` | AI categorization |
 | `ENABLE_DUE_DATE_INFERENCE` | `true` | Relative date parsing |
 | `HIGH_PRIORITY_KEYWORDS` | `urgent,asap,critical,today,p0,immediately,blocker` | Priority triggers |
+| `COMPLETION_CONFIDENCE_THRESHOLD` | `0.85` | Confidence level for auto-completing (below = "Done?") |
 
 ## Development
 
@@ -212,6 +215,9 @@ Fixed in v1.0 - uses `team_domain` instead of `team` for workspace name.
 
 ### Todos link to wrong messages
 Fixed in v1.0 - uses `source_id` tracking instead of fuzzy matching.
+
+### Notion comments show 403 Forbidden
+The Notion integration needs "Insert comments" capability. Go to https://www.notion.so/my-integrations, select your integration, and enable "Insert comments" under Capabilities. Comments are optional - completion detection still works without them.
 
 ## License
 

@@ -19,6 +19,26 @@ class SlackClient:
         self.base_url = "https://slack.com/api"
         self.user_cache: Dict[str, str] = {}  # Cache user ID -> display name
         self._workspace_name: Optional[str] = None  # Cache workspace name
+        self._my_user_id: Optional[str] = None  # Cache authenticated user's ID
+
+    def _get_my_user_id(self) -> str:
+        """
+        Get the authenticated user's Slack ID (cached).
+
+        Returns:
+            The user ID of the authenticated user
+        """
+        if self._my_user_id:
+            return self._my_user_id
+
+        try:
+            data = self._make_request("auth.test")
+            self._my_user_id = data.get("user_id")
+            logger.debug(f"Authenticated Slack user ID: {self._my_user_id}")
+            return self._my_user_id
+        except Exception as e:
+            logger.warning(f"Could not get authenticated user ID: {e}")
+            return None
 
     def get_workspace_name(self) -> str:
         """
@@ -259,7 +279,18 @@ class SlackClient:
         content = []
         conversations = self.get_all_conversations()
 
+        # Filter to only conversations updated within the lookback period
+        # The 'updated' field is a Unix timestamp in milliseconds
+        cutoff_ts = (datetime.now() - timedelta(days=days)).timestamp() * 1000
+        active_conversations = []
         for conv in conversations:
+            updated = conv.get("updated", 0)
+            if updated >= cutoff_ts:
+                active_conversations.append(conv)
+
+        logger.info(f"Filtered to {len(active_conversations)} conversations with recent activity (from {len(conversations)} total)")
+
+        for conv in active_conversations:
             channel_id = conv.get("id")
             conv_name = self._get_conversation_name(conv)
 
@@ -267,11 +298,28 @@ class SlackClient:
             if conv.get("is_archived"):
                 continue
 
+            # Skip channels user hasn't joined (only scan conversations user is part of)
+            if not conv.get("is_member", False):
+                logger.debug(f"Skipping {conv_name} - user is not a member")
+                continue
+
             # Get messages
             messages = self.get_conversation_history(channel_id, days=days)
 
             if not messages:
                 continue
+
+            # For channels (not DMs), skip if user hasn't participated (no messages from user)
+            # This prevents extracting todos from conversations the user just observes
+            # DMs (is_im/is_mpim) are always included since they're directed at the user
+            is_dm = conv.get("is_im") or conv.get("is_mpim")
+            if not is_dm:
+                my_user_id = self._get_my_user_id()
+                if my_user_id:
+                    user_participated = any(msg.get("user") == my_user_id for msg in messages)
+                    if not user_participated:
+                        logger.debug(f"Skipping {conv_name} - user has no messages in this channel")
+                        continue
 
             # Format messages for this conversation
             formatted_messages = []

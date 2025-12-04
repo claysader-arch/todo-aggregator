@@ -107,11 +107,62 @@ class ClaudeProcessor:
   - If no date mentioned, use null
   (Today is {today_str}, {day_name})"""
 
-        prompt = f"""You are analyzing messages from multiple platforms to extract actionable todo items.
+        # Get user identity info for contextualized extraction
+        user_name = Config.MY_NAME.split(",")[0].strip() if Config.MY_NAME else "the user"
+        user_variations = Config.MY_NAME if Config.MY_NAME else user_name
+        slack_username = Config.MY_SLACK_USERNAME or user_name
+        user_email = Config.MY_EMAIL or ""
 
-Extract both:
-1. **Explicit assignments**: Direct requests like "Can you send me the report?"
-2. **Implicit commitments**: Statements like "I'll follow up tomorrow" or "Let me check on that"
+        # Build identity section
+        identity_info = f"- Name variations: {user_variations}"
+        if Config.MY_SLACK_USERNAME:
+            identity_info += f"\n- Slack username: @{slack_username} (messages from this user are {user_name}'s own words)"
+        if Config.MY_EMAIL:
+            identity_info += f"\n- Email: {user_email}"
+
+        prompt = f"""You are extracting todos specifically for {user_name}.
+
+## User Identity
+{identity_info}
+
+## Message Format
+- **Slack**: "[timestamp] @Username: message" - the @Username shows WHO sent each message
+- **Gmail**: "=== Gmail: Subject (from: Sender) ===" - shows the sender; greeting often shows recipient
+- **Zoom**: Meeting summaries with action items
+
+## Your Task
+
+Analyze each conversation or email thread as a whole. Consider the full context - who is talking to whom, what commitments are being made, and who is responsible for what.
+
+**Only return a todo if {user_name} is clearly the intended owner**, either because:
+- {user_name} agreed to do something (look for messages FROM @{slack_username})
+- {user_name} was clearly the recipient of a request or assignment, based on context
+- An email or message is directly addressed to {user_name} with an actionable ask
+
+**Do not extract todos that belong to other people.** If two other people are discussing tasks between themselves, those are not {user_name}'s todos - even if {user_name} is CC'd or in the same channel/group chat.
+
+**User must be PART of the conversation.** Only extract todos from conversations where {user_name} is actually involved:
+- {user_name} sent a message in the conversation (look for @{slack_username} as the sender)
+- {user_name} was directly @-mentioned or addressed by name
+- It's a DM or email where {user_name} is a direct participant
+- The message explicitly addresses {user_name} (e.g., "Hey {user_name},", "@{slack_username}")
+If a conversation is between other people and {user_name} is just observing the channel, do NOT extract todos from it.
+
+**Delegation removes ownership.** If {user_name} asks someone for help and they agree to do it (e.g., "I'll take care of it", "I can handle that"), the task now belongs to that person, not {user_name}.
+
+**Do NOT create todos for:**
+- Calendar invites or meeting requests - these are already on the calendar
+- "Attend [meeting name]" - attending a scheduled meeting is not a todo
+- Requests that were already resolved within the same conversation thread (look for back-and-forth that concludes the matter)
+- Old requests in threads - if a request was made several days ago and there's been subsequent conversation, assume it's handled unless explicitly still pending
+- Automated system notifications from noreply@, notifications@, no-reply@, or bulk mailing systems
+- Low-value transactional emails (expense report reminders, lunch order confirmations, subscription renewals) unless genuinely urgent
+
+**Look at conversation flow:** If someone requests information and later says "thank you", "I appreciate you", or similar - the request was likely fulfilled. Don't extract resolved requests as new todos.
+
+**Prioritize personal over automated:** Distinguish between personal requests from colleagues (high value) and automated system notifications (low value). Focus on direct asks from real people, not system-generated reminders.
+
+Set the **confidence** field to reflect how certain you are that this todo belongs to {user_name} (0.0 to 1.0).
 
 For each todo, determine:
 - task: Clear, concise description
@@ -342,13 +393,20 @@ Only return the JSON array, no additional text."""
             {"id": todo.get("id"), "task": todo.get("task", "")} for todo in open_todos
         ]
 
-        prompt = f"""You are analyzing recent messages to detect if any open todos have been completed.
+        prompt = f"""You are analyzing recent messages to detect if any open todos have been ACTUALLY completed.
 
-Look for completion signals like:
-- Keywords: "Done", "Completed", "Finished", "Sent", "Delivered"
-- Past tense confirmations: "I sent...", "I finished..."
-- Status updates indicating completion
-- Reactions or confirmations from others
+**BE CONSERVATIVE.** Only mark a todo as completed if you see clear evidence that the deliverable was sent, finished, or received.
+
+Valid completion signals:
+- The todo owner saying they DID the action: "I sent it", "Done!", "Just finished", "Attached"
+- Recipient confirming RECEIPT of deliverable: "Got it, thanks!", "Received the document"
+- Explicit status: "Done", "Completed", "Finished"
+
+**NOT valid completion signals:**
+- Acknowledging a commitment or timeline: "Thank you for the update", "Sounds good"
+- Future tense: "I'll send it tomorrow", "Will do"
+- Someone else doing a related but different task
+- General thank-yous that don't confirm receipt of the specific deliverable
 
 Open todos:
 {json.dumps(todos_summary, indent=2)}
@@ -356,7 +414,7 @@ Open todos:
 Recent content:
 {content}
 
-For each todo that shows signs of completion, identify it.
+For each todo that shows CLEAR evidence of completion, identify it. When in doubt, do NOT mark as completed.
 
 Return a JSON array with this structure:
 [
