@@ -2,9 +2,8 @@ name: Todo Aggregator
 
 on:
   schedule:
-    # Run at 9am and 5pm PT (UTC-8) on weekdays
-    - cron: '0 17 * * 1-5'  # 9am PT
-    - cron: '0 1 * * 2-6'   # 5pm PT (next day UTC)
+    # Run at 7am PT daily (15:00 UTC during PST, will be 8am during PDT)
+    - cron: '0 15 * * *'
   workflow_dispatch:  # Manual trigger
 
 jobs:
