@@ -179,6 +179,41 @@ class SlackClient:
 
         return conversation.get("name", "unknown")
 
+    def _get_thread_replies(
+        self, channel_id: str, thread_ts: str, days: int = 1
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all replies in a thread.
+
+        Args:
+            channel_id: Slack channel ID
+            thread_ts: Thread parent timestamp
+            days: Number of days to look back (for filtering)
+
+        Returns:
+            List of message objects from the thread
+        """
+        try:
+            oldest = (datetime.now() - timedelta(days=days)).timestamp()
+            params = {
+                "channel": channel_id,
+                "ts": thread_ts,
+                "limit": 100,
+                "oldest": str(oldest),
+            }
+            data = self._make_request("conversations.replies", params)
+            replies = data.get("messages", [])
+            # Filter same as main messages (exclude bot messages and system messages)
+            return [
+                m for m in replies
+                if m.get("type") == "message"
+                and not m.get("subtype")
+                and not m.get("bot_id")
+            ]
+        except Exception as e:
+            logger.debug(f"Could not fetch thread replies for {thread_ts}: {e}")
+            return []
+
     def get_all_conversations(self) -> List[Dict[str, Any]]:
         """
         Get all conversations the user has access to.
@@ -221,7 +256,7 @@ class SlackClient:
         self, channel_id: str, days: int = 1, limit: int = 100
     ) -> List[Dict[str, Any]]:
         """
-        Get message history from a conversation.
+        Get message history from a conversation, including thread replies.
 
         Args:
             channel_id: Slack conversation ID
@@ -229,15 +264,16 @@ class SlackClient:
             limit: Maximum number of messages to retrieve
 
         Returns:
-            List of message objects, newest first
+            List of message objects with recent activity
         """
         messages = []
-        oldest = (datetime.now() - timedelta(days=days)).timestamp()
+        oldest_ts = (datetime.now() - timedelta(days=days)).timestamp()
 
         try:
+            # Don't use 'oldest' filter here - we need to find thread parents
+            # that may be older but have recent thread replies
             params = {
                 "channel": channel_id,
-                "oldest": str(oldest),
                 "limit": min(limit, 100),  # Slack max is 100 per request
             }
 
@@ -251,6 +287,51 @@ class SlackClient:
                 and not m.get("subtype")  # Exclude join/leave/etc
                 and not m.get("bot_id")  # Exclude bot messages
             ]
+
+            # Fetch thread replies for messages that are thread parents
+            # Use 'oldest' filter here to only get recent thread activity
+            thread_messages = []
+            threads_with_recent_activity = set()
+            for msg in messages:
+                reply_count = msg.get("reply_count", 0)
+                if reply_count > 0:
+                    thread_ts = msg.get("thread_ts") or msg.get("ts")
+                    replies = self._get_thread_replies(channel_id, thread_ts, days=days)
+                    if replies:
+                        threads_with_recent_activity.add(thread_ts)
+                        thread_messages.extend(replies)
+                        logger.debug(f"Fetched {len(replies)} recent replies from thread {thread_ts}")
+
+            # Combine and deduplicate (parent message may appear in both)
+            if thread_messages:
+                all_messages = messages + thread_messages
+                seen_ts = set()
+                deduplicated = []
+                for msg in all_messages:
+                    ts = msg.get("ts")
+                    if ts not in seen_ts:
+                        seen_ts.add(ts)
+                        deduplicated.append(msg)
+                messages = deduplicated
+
+            # Now filter to only include:
+            # 1. Messages newer than the cutoff, OR
+            # 2. Thread parent messages that have recent thread activity
+            filtered = []
+            for msg in messages:
+                ts = float(msg.get("ts", 0))
+                thread_ts = msg.get("thread_ts") or msg.get("ts")
+
+                if ts >= oldest_ts:
+                    # Recent message
+                    filtered.append(msg)
+                elif thread_ts in threads_with_recent_activity:
+                    # Old thread parent with recent replies - include for context
+                    filtered.append(msg)
+
+            messages = filtered
+            if messages:
+                logger.debug(f"After filtering: {len(messages)} messages with recent activity")
 
         except Exception as e:
             # Common error: not_in_channel for private channels we can't access
@@ -279,18 +360,14 @@ class SlackClient:
         content = []
         conversations = self.get_all_conversations()
 
-        # Filter to only conversations updated within the lookback period
-        # The 'updated' field is a Unix timestamp in milliseconds
-        cutoff_ts = (datetime.now() - timedelta(days=days)).timestamp() * 1000
-        active_conversations = []
+        # Note: We don't filter by 'updated' timestamp because Slack thread replies
+        # don't always update the conversation's 'updated' field. Instead, we rely on:
+        # 1. is_member filter to only scan channels user is in
+        # 2. conversations.history with oldest parameter to get only recent messages
+        # 3. Participation filter to skip channels where user hasn't participated
+        logger.info(f"Scanning {len(conversations)} conversations for recent activity")
+
         for conv in conversations:
-            updated = conv.get("updated", 0)
-            if updated >= cutoff_ts:
-                active_conversations.append(conv)
-
-        logger.info(f"Filtered to {len(active_conversations)} conversations with recent activity (from {len(conversations)} total)")
-
-        for conv in active_conversations:
             channel_id = conv.get("id")
             conv_name = self._get_conversation_name(conv)
 
