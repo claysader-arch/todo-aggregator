@@ -183,6 +183,14 @@ todo-aggregator/
 - Zoom emails are automatically re-attributed from "gmail" to "zoom" source
 - HTML emails are parsed using BeautifulSoup for accurate text extraction
 
+### Slack Hybrid Approach (Performance Optimized)
+- **Two-bucket strategy** for ~12x faster performance:
+  - Bucket 1: DMs via Search API (`is:dm`) - ~10 seconds
+  - Bucket 2: Only channels where user actively participated - ~60 seconds
+- **Total: ~70 seconds** vs 15+ minutes with full scan
+- Requires `search:read` scope for optimal performance
+- Falls back to full scan if search scope unavailable
+
 ### Slack Thread Support
 - Fetches both channel messages and thread replies
 - Each message gets its own trackable source URL

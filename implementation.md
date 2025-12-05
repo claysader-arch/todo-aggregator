@@ -1,3 +1,5 @@
+> **⚠️ OUTDATED**: This document describes the original Zapier-based approach. See [GCP_MIGRATION_PLAN.md](GCP_MIGRATION_PLAN.md) for the current GCP-native implementation.
+
 # Template Implementation Plan: Notion + Zapier Templates
 
 ## Overview

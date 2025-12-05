@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Todo Aggregator - Register</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Todo Aggregator</h1>
+            <p class="subtitle">Register to automatically extract todos from Slack, Gmail, and Zoom</p>
+        </header>
+
+        <form id="register-form" class="form">
+            <div class="form-section">
+                <h2>Access</h2>
+                <div class="form-group">
+                    <label for="access_code">Access Code *</label>
+                    <input type="password" id="access_code" name="access_code" required
+                           placeholder="Enter the shared access code">
+                    <span class="help-text">Get this from the setup guide in Notion</span>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h2>Your Information</h2>
+                <div class="form-group">
+                    <label for="name">Name *</label>
+                    <input type="text" id="name" name="name" required
+                           placeholder="e.g., Clay Sader">
+                    <span class="help-text">Your name as it appears in messages (or comma-separated variations)</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="email">Email *</label>
+                    <input type="email" id="email" name="email" required
+                           placeholder="you@example.com">
+                    <span class="help-text">Used for error notifications</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="slack_username">Slack Display Name *</label>
+                    <input type="text" id="slack_username" name="slack_username" required
+                           placeholder="e.g., Clay">
+                    <span class="help-text">Your display name in Slack</span>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h2>Credentials</h2>
+
+                <div class="form-group">
+                    <label for="slack_token">Slack User Token *</label>
+                    <input type="password" id="slack_token" name="slack_token" required
+                           placeholder="xoxp-...">
+                    <span class="help-text">
+                        Starts with <code>xoxp-</code>.
+                        <a href="https://matterintelligence.slack.com/oauth?client_id=5416048952740.10046227645252&scope=&user_scope=channels%3Ahistory%2Cchannels%3Aread%2Cgroups%3Ahistory%2Cgroups%3Aread%2Cim%3Ahistory%2Cim%3Aread%2Cmpim%3Ahistory%2Cmpim%3Aread%2Cusers%3Aread%2Csearch%3Aread" target="_blank">Get token</a>
+                    </span>
+                </div>
+
+                <div class="form-group">
+                    <label for="gmail_refresh_token">Gmail Refresh Token *</label>
+                    <input type="password" id="gmail_refresh_token" name="gmail_refresh_token" required
+                           placeholder="1//...">
+                    <span class="help-text">
+                        Starts with <code>1//</code>. See setup guide for instructions.
+                    </span>
+                </div>
+
+                <div class="form-group">
+                    <label for="notion_database_id">Notion Database ID *</label>
+                    <input type="text" id="notion_database_id" name="notion_database_id" required
+                           placeholder="32-character ID" pattern="[a-f0-9]{32}" maxlength="32">
+                    <span class="help-text">
+                        The 32-character ID from your Todos database URL
+                    </span>
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" id="submit-btn">Register</button>
+            </div>
+
+            <div id="message" class="message hidden"></div>
+        </form>
+
+        <footer>
+            <p>Need help? Check the <a href="#">Setup Guide</a> in Notion.</p>
+        </footer>
+    </div>
+
+    <script>
+        const form = document.getElementById('register-form');
+        const submitBtn = document.getElementById('submit-btn');
+        const messageDiv = document.getElementById('message');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Disable submit button
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Registering...';
+            messageDiv.className = 'message hidden';
+
+            // Collect form data
+            const formData = {
+                access_code: form.access_code.value,
+                name: form.name.value,
+                email: form.email.value,
+                slack_username: form.slack_username.value,
+                slack_token: form.slack_token.value,
+                gmail_refresh_token: form.gmail_refresh_token.value,
+                notion_database_id: form.notion_database_id.value.replace(/-/g, ''),
+            };
+
+            try {
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(formData),
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    messageDiv.textContent = `${result.message} (ID: ${result.user_id})`;
+                    messageDiv.className = 'message success';
+
+                    // Clear sensitive fields on success
+                    form.access_code.value = '';
+                    form.slack_token.value = '';
+                    form.gmail_refresh_token.value = '';
+                } else {
+                    messageDiv.textContent = result.detail || 'Registration failed';
+                    messageDiv.className = 'message error';
+                }
+            } catch (error) {
+                messageDiv.textContent = 'Network error. Please try again.';
+                messageDiv.className = 'message error';
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Register';
+            }
+        });
+
+        // Client-side validation for Notion Database ID
+        const notionInput = document.getElementById('notion_database_id');
+        notionInput.addEventListener('input', (e) => {
+            // Remove dashes and non-hex characters
+            let value = e.target.value.replace(/-/g, '').replace(/[^a-f0-9]/gi, '').toLowerCase();
+            if (value.length > 32) {
+                value = value.substring(0, 32);
+            }
+            e.target.value = value;
+        });
+
+        // Show/hide password toggle could be added here
+    </script>
+</body>
+</html>

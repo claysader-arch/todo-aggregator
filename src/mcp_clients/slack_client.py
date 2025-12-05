@@ -384,11 +384,267 @@ class SlackClient:
 
         return messages
 
+    def search_messages_with_query(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search for messages using Slack Search API with a custom query.
+
+        Args:
+            query: Slack search query (e.g., "is:dm after:2025-01-01")
+
+        Returns:
+            List of message match objects from search API
+        """
+        messages = []
+        page = 1
+
+        while True:
+            params = {
+                "query": query,
+                "sort": "timestamp",
+                "count": 100,
+                "page": page,
+            }
+
+            data = self._make_request("search.messages", params)
+            matches = data.get("messages", {}).get("matches", [])
+            messages.extend(matches)
+
+            # Check pagination
+            paging = data.get("messages", {}).get("paging", {})
+            total_pages = paging.get("pages", 1)
+            if page >= total_pages:
+                break
+            page += 1
+
+            # Safety limit to avoid infinite loops
+            if page > 20:
+                logger.warning("Reached max pages (20) in search, stopping")
+                break
+
+        return messages
+
+    def search_recent_messages(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Search for recent messages using Slack Search API.
+
+        Much faster than scanning all conversations individually.
+        Requires search:read scope.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of message match objects from search API
+        """
+        # Use UTC-8 offset for consistent date across timezones
+        after_date = (datetime.utcnow() - timedelta(days=days, hours=8)).strftime("%Y-%m-%d")
+        query = f"from:me OR to:me after:{after_date}"
+        messages = self.search_messages_with_query(query)
+        logger.info(f"Search API found {len(messages)} messages from last {days} day(s)")
+        return messages
+
+    def _search_dms(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Search for DM messages using Search API.
+
+        Uses 'is:dm' query which captures all DM messages the user can see.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of formatted content dicts for DM messages
+        """
+        # Use UTC-8 (Pacific) timezone offset to ensure consistent behavior
+        # across local dev and Cloud Run (which runs in UTC)
+        # This gives us a full day's worth of messages regardless of when the job runs
+        after_date = (datetime.utcnow() - timedelta(days=days, hours=8)).strftime("%Y-%m-%d")
+        query = f"is:dm after:{after_date}"
+
+        messages = self.search_messages_with_query(query)
+        logger.info(f"Search API found {len(messages)} DM messages")
+
+        content = []
+        for msg in messages:
+            # Skip bot messages
+            if msg.get("bot_id"):
+                continue
+
+            channel = msg.get("channel", {})
+            channel_id = channel.get("id", "")
+            channel_name = channel.get("name", "unknown")
+
+            # Format channel name for DMs
+            if channel.get("is_im"):
+                conv_name = "DM"
+            elif channel.get("is_mpim"):
+                conv_name = channel_name if channel_name != "unknown" else "Group DM"
+            else:
+                conv_name = f"#{channel_name}"
+
+            # Get message details
+            ts = msg.get("ts", "0")
+            user_id = msg.get("user", msg.get("username", "unknown"))
+            user_name = msg.get("username", self._get_user_name(user_id) if user_id != "unknown" else "unknown")
+            text = msg.get("text", "")
+            permalink = msg.get("permalink", self._build_message_url(channel_id, ts))
+
+            # Format timestamp
+            try:
+                ts_float = float(ts)
+                timestamp = datetime.fromtimestamp(ts_float).strftime("%Y-%m-%d %H:%M")
+            except:
+                timestamp = "unknown"
+
+            if text:
+                formatted_msg = f"[{timestamp}] @{user_name}: {text}"
+
+                content.append({
+                    "text": f"=== Slack: {conv_name} ===\n{formatted_msg}",
+                    "source_url": permalink,
+                    "source": "slack",
+                    "metadata": {
+                        "channel_id": channel_id,
+                        "channel_name": conv_name,
+                        "message_ts": ts,
+                    }
+                })
+
+        return content
+
+    def _get_active_channels(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Get channels where the user has recently posted.
+
+        Filters to only channels (not DMs) where user is a member and has
+        posted within the lookback period.
+
+        Args:
+            days: Number of days to look back for user activity
+
+        Returns:
+            List of channel conversation objects where user is active
+        """
+        conversations = self.get_all_conversations()
+        my_user_id = self._get_my_user_id()
+        active_channels = []
+
+        for conv in conversations:
+            # Skip DMs (handled by search)
+            if conv.get("is_im") or conv.get("is_mpim"):
+                continue
+
+            # Skip archived
+            if conv.get("is_archived"):
+                continue
+
+            # Skip if not a member
+            if not conv.get("is_member", False):
+                continue
+
+            # Check if user posted recently in this channel
+            channel_id = conv.get("id")
+            if self._user_posted_recently(channel_id, days, my_user_id):
+                conv_name = self._get_conversation_name(conv)
+                logger.debug(f"User is active in {conv_name}")
+                active_channels.append(conv)
+
+        logger.info(f"Found {len(active_channels)} channels where user is active")
+        return active_channels
+
+    def _user_posted_recently(self, channel_id: str, days: int, my_user_id: str) -> bool:
+        """
+        Check if user posted in a channel recently.
+
+        Fetches a small batch of recent messages and checks for user's posts.
+
+        Args:
+            channel_id: Slack channel ID
+            days: Number of days to look back
+            my_user_id: The authenticated user's ID
+
+        Returns:
+            True if user has posted in the channel within the time period
+        """
+        if not my_user_id:
+            return False
+
+        oldest_ts = (datetime.now() - timedelta(days=days)).timestamp()
+
+        try:
+            params = {
+                "channel": channel_id,
+                "limit": 50,  # Small batch for quick check
+                "oldest": str(oldest_ts),
+            }
+            data = self._make_request("conversations.history", params)
+            messages = data.get("messages", [])
+
+            # Check if any message is from the user
+            for msg in messages:
+                if msg.get("user") == my_user_id:
+                    return True
+
+            return False
+
+        except Exception as e:
+            error_str = str(e)
+            if "not_in_channel" in error_str or "channel_not_found" in error_str:
+                return False
+            logger.debug(f"Error checking channel {channel_id}: {e}")
+            return False
+
+    def _get_channel_messages(self, conv: Dict[str, Any], days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Get formatted messages from a single channel.
+
+        Args:
+            conv: Conversation object from Slack API
+            days: Number of days to look back
+
+        Returns:
+            List of formatted content dicts
+        """
+        channel_id = conv.get("id")
+        conv_name = self._get_conversation_name(conv)
+        content = []
+
+        messages = self.get_conversation_history(channel_id, days=days)
+
+        for msg in reversed(messages):  # Oldest first for context
+            ts = msg.get("ts", "0")
+            try:
+                ts_float = float(ts)
+                timestamp = datetime.fromtimestamp(ts_float).strftime("%Y-%m-%d %H:%M")
+            except:
+                timestamp = "unknown"
+
+            user_id = msg.get("user", "unknown")
+            user_name = self._get_user_name(user_id)
+
+            text = msg.get("text", "")
+            if text:
+                formatted_msg = f"[{timestamp}] @{user_name}: {text}"
+                source_url = self._build_message_url(channel_id, ts)
+
+                content.append({
+                    "text": f"=== Slack: {conv_name} ===\n{formatted_msg}",
+                    "source_url": source_url,
+                    "source": "slack",
+                    "metadata": {
+                        "channel_id": channel_id,
+                        "channel_name": conv_name,
+                        "message_ts": ts,
+                    }
+                })
+
+        return content
+
     def get_slack_content(self, days: int = 1) -> List[Dict[str, Any]]:
         """
-        Get formatted messages from all active conversations.
+        Get formatted messages from Slack.
 
-        This is the main method called by the orchestrator.
+        Uses Search API (fast) with fallback to conversation scan (slow).
 
         Args:
             days: Number of days to look back
@@ -396,7 +652,73 @@ class SlackClient:
         Returns:
             List of structured content dicts with text, source_url, source, and metadata
         """
-        logger.info(f"Fetching Slack messages from last {days} day(s)...")
+        try:
+            # Try search API first (requires search:read scope)
+            return self._get_slack_content_via_search(days)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "missing_scope" in error_str or "not_allowed" in error_str:
+                logger.warning("search:read scope not available, falling back to conversation scan")
+                return self._get_slack_content_via_scan(days)
+            raise
+
+    def _get_slack_content_via_search(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Hybrid approach: Search API for DMs + selective channel scan.
+
+        This is much faster than scanning all conversations while maintaining
+        feature parity with the full scan approach.
+
+        Bucket 1: DMs via Search API (~1-2 seconds)
+        Bucket 2: Only channels where user actively participated (~30-60 seconds)
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of structured content dicts
+        """
+        logger.info(f"Fetching Slack messages via hybrid approach (last {days} day(s))...")
+
+        content = []
+
+        # Bucket 1: DMs via Search API (fast)
+        try:
+            dm_content = self._search_dms(days)
+            content.extend(dm_content)
+            logger.info(f"Bucket 1 (DM search): {len(dm_content)} messages")
+        except Exception as e:
+            logger.warning(f"DM search failed: {e}")
+
+        # Bucket 2: Scan only channels where user actively participated
+        try:
+            active_channels = self._get_active_channels(days)
+            logger.info(f"Bucket 2: Scanning {len(active_channels)} active channels")
+
+            for conv in active_channels:
+                channel_content = self._get_channel_messages(conv, days)
+                content.extend(channel_content)
+                if channel_content:
+                    conv_name = self._get_conversation_name(conv)
+                    logger.debug(f"  {conv_name}: {len(channel_content)} messages")
+
+        except Exception as e:
+            logger.warning(f"Channel scan failed: {e}")
+
+        logger.info(f"Collected {len(content)} total Slack messages via hybrid approach")
+        return content
+
+    def _get_slack_content_via_scan(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Slow fallback: scan all conversations individually.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of structured content dicts
+        """
+        logger.info(f"Fetching Slack messages via conversation scan (last {days} day(s))...")
 
         content = []
         conversations = self.get_all_conversations()
