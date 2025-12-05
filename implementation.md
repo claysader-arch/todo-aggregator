@@ -172,7 +172,6 @@ This will open a browser, authenticate, and print your refresh token.
   "slack_token": "xoxp-your-token-here",
   "gmail_refresh_token": "1//your-refresh-token",
   "notion_database_id": "your-database-id",
-  "notion_meetings_db_id": "",
   "user_name": "Your Name",
   "user_email": "you@email.com",
   "user_slack_username": "Your Slack Display Name"
@@ -254,7 +253,6 @@ This will open a browser, authenticate, and print your refresh token.
 | `notion_database_id` | `xxx` | Yes | The 32-character ID from your Todos database URL |
 | `slack_token` | `xoxp-xxx` | Yes | Your Slack User OAuth Token from Step 2. |
 | `gmail_refresh_token` | `1//xxx` | Yes | Your Gmail refresh token from Step 3. |
-| `notion_meetings_db_id` | `` | No | Database ID for Notion AI meeting notes. Leave empty to skip. |
 | `user_name` | `Your Name` | Yes | Your name (or comma-separated variations like "Clay,clay,Clay Sader") |
 | `user_email` | `you@email.com` | No | Your email for error notifications |
 | `user_slack_username` | `Your Display Name` | No | Your Slack display name for accurate todo extraction |
@@ -264,7 +262,6 @@ This will open a browser, authenticate, and print your refresh token.
 ```json
 {
   "notion_database_id": "",
-  "notion_meetings_db_id": "",
   "slack_token": "",
   "gmail_refresh_token": "",
   "user_name": "",
@@ -546,7 +543,6 @@ python gmail_oauth_setup.py
 | `user_name` | Your name (e.g., `Clay` or `Clay,clay,Clay Sader`) |
 | `user_email` | Your email (for error notifications) |
 | `user_slack_username` | Your Slack display name |
-| `notion_meetings_db_id` | Leave empty (or add Notion AI notes DB) |
 
 ### 4.4 Test & Publish
 

@@ -57,7 +57,6 @@ class RunRequest(BaseModel):
     slack_token: str = ""
     gmail_refresh_token: str = ""
     notion_database_id: str
-    notion_meetings_db_id: str = ""
 
     # User context
     user_name: str
@@ -193,14 +192,13 @@ async def run_aggregator(
         notion = NotionClient(
             api_key=NOTION_API_KEY,
             database_id=request.notion_database_id,
-            meetings_db_id=request.notion_meetings_db_id or None,
         )
         logger.info("Initialized Notion client")
 
         claude = ClaudeProcessor()
 
         # Collect content from all sources
-        raw_content = {"slack": [], "gmail": [], "zoom": [], "notion": []}
+        raw_content = {"slack": [], "gmail": []}
 
         if slack:
             try:
@@ -215,13 +213,6 @@ async def run_aggregator(
                 logger.info(f"Collected {len(raw_content['gmail'])} Gmail threads")
             except Exception as e:
                 logger.error(f"Error collecting Gmail content: {e}")
-
-        if request.notion_meetings_db_id:
-            try:
-                raw_content["notion"] = notion.get_recent_meetings(days=1)
-                logger.info(f"Collected {len(raw_content['notion'])} Notion meeting notes")
-            except Exception as e:
-                logger.error(f"Error collecting Notion meetings: {e}")
 
         # Extract todos using Claude with user context
         extracted = claude.extract_todos(
