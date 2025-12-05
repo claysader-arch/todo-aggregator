@@ -2,8 +2,8 @@
 
 This API provides:
 - User registration and management
-- Zapier-triggered todo aggregation
-- Batch processing for all users
+- Per-user and batch todo aggregation
+- Cloud Scheduler integration for automated daily runs
 """
 
 import hashlib
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Todo Aggregator API",
-    description="API endpoint for Zapier-triggered todo aggregation",
+    description="GCP-native todo aggregation service with multi-user support",
     version="1.0.0",
 )
 
@@ -91,7 +91,7 @@ SMTP_FROM = os.environ.get("SMTP_FROM", "noreply@company.com")
 class RunRequest(BaseModel):
     """Request body for the /run endpoint."""
 
-    # User credentials (from Zapier webhook config)
+    # User credentials (from Secret Manager)
     slack_token: str = ""
     gmail_refresh_token: str = ""
     notion_database_id: str
@@ -605,7 +605,7 @@ async def run_aggregator(
 ) -> RunResponse:
     """Run the todo aggregator for a specific user.
 
-    This endpoint is called by Zapier on a schedule. It:
+    This endpoint is used for ad-hoc runs with explicit credentials. It:
     1. Validates the request
     2. Queues the aggregation to run in the background
     3. Returns immediately with 202 Accepted

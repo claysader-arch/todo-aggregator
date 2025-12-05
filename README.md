@@ -12,38 +12,59 @@ This system uses Claude Opus 4.5 to:
 - Infer due dates from relative references ("by Friday", "next week")
 - Maintain a canonical todo list in Notion with clickable source links
 
-## Deployment Options
-
-### Option 1: Hosted API + Zapier (Recommended for Teams)
-
-The API is deployed to GCP Cloud Run and can be triggered via Zapier webhooks:
-
-- **API URL**: `https://todo-aggregator-908833572352.us-central1.run.app`
-- **Endpoints**:
-  - `POST /run` - Run the aggregator for a user
-  - `GET /health` - Health check
-
-See [Multi-User Setup](#multi-user-setup-with-zapier) below.
-
-### Option 2: GitHub Actions (Single User)
-
-Runs automatically via GitHub Actions on a schedule. See [GitHub Actions](#github-actions-automated-scheduling) below.
-
-### Option 3: Local Execution
-
-Run manually with `python src/orchestrator.py`.
-
 ## Architecture
 
 ```
-Slack API  ──┐
-Gmail API  ──┼──→ Claude Opus 4.5 ──→ Notion Database
-Zoom API   ──┘    (extraction,         (canonical state)
-                   deduplication,
-                   intelligence)
+┌─────────────────────────────────────────────────────────────┐
+│  Cloud Scheduler (7am PT daily)                             │
+│  POST /run-all with OIDC auth                               │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Cloud Run API                                              │
+│  ├── POST /run-all       Process all enabled users          │
+│  ├── POST /run/{user_id} Process single user               │
+│  ├── GET /trigger/{id}/{token} Personal trigger URL        │
+│  ├── POST /register      User self-registration            │
+│  └── GET /health         Health check                      │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+┌──────────────────┐    ┌─────────────────────┐
+│  Firestore       │    │  Secret Manager     │
+│  users/{uid}     │    │  slack-token-{uid}  │
+│  - email         │    │  gmail-token-{uid}  │
+│  - name          │    │  (shared secrets)   │
+│  - notion_db_id  │    │  - anthropic-api-key│
+│  - enabled       │    │  - notion-api-key   │
+└──────────────────┘    └─────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Data Sources                                               │
+│  Slack API  ──┐                                             │
+│  Gmail API  ──┼──→ Claude Opus 4.5 ──→ Notion Database     │
+│  Zoom API   ──┘    (extraction,         (canonical state)   │
+│                     deduplication)                          │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Deployment
+
+### GCP Cloud Run (Production)
+
+The API is deployed to GCP Cloud Run with automated daily scheduling via Cloud Scheduler.
+
+- **API URL**: `https://todo-aggregator-908833572352.us-central1.run.app`
+- **Registration**: `https://todo-aggregator-908833572352.us-central1.run.app/register`
+
+### Local Execution (Development)
+
+Run manually with `python src/orchestrator.py`.
+
+## Quick Start (Local Development)
 
 ### 1. Clone and Install
 
@@ -109,71 +130,90 @@ python scripts/gmail_oauth_setup.py /path/to/google-credentials.json
 
 Follow the prompts to authorize and get your refresh token.
 
-## GitHub Actions (Automated Scheduling)
+## Multi-User Setup (GCP Native)
 
-The aggregator runs automatically via GitHub Actions.
+The system supports multiple users with self-service registration and automated daily runs.
 
-### Configure Secrets
+### User Registration
 
-Go to your repo **Settings** → **Secrets and variables** → **Actions**:
+1. User visits `/register` on the Cloud Run URL
+2. Enters access code (shared via internal docs)
+3. Provides their credentials:
+   - Slack User Token
+   - Gmail Refresh Token
+   - Notion Database ID
+4. Credentials are stored securely in Secret Manager
+5. User config is stored in Firestore
+6. Welcome email is sent with personal trigger URL
 
-**Secrets** (required):
-- `ANTHROPIC_API_KEY`
-- `NOTION_API_KEY`
-- `NOTION_DATABASE_ID`
+### Personal Trigger URLs
 
-**Secrets** (optional, per integration):
-- `SLACK_USER_TOKEN`
-- `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`
-- `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`
-- `NOTION_MEETINGS_DATABASE_ID`
+Each user gets a personal URL to manually trigger their aggregation:
+```
+GET /trigger/{user_id}/{personal_token}
+```
 
-**Variables** (non-sensitive):
-- `MY_NAME` - Your name variations for filtering (e.g., `Clay,clay,Clay Sader`)
+This allows users to run on-demand without waiting for the daily schedule.
 
-### Schedule
+### Automated Daily Runs
 
-By default, runs daily at 7am PT. Edit `.github/workflows/todo-aggregator.yml` to change.
+Cloud Scheduler triggers `POST /run-all` at 7am PT daily, which:
+1. Fetches all enabled users from Firestore
+2. Retrieves credentials from Secret Manager for each user
+3. Processes each user sequentially
+4. Updates run status in Firestore
 
-### Manual Run
+### Credential Storage
 
-Go to **Actions** → **Todo Aggregator** → **Run workflow**
+| Credential | Storage | Type |
+|------------|---------|------|
+| Anthropic API Key | Secret Manager | Shared |
+| Notion API Key | Secret Manager | Shared |
+| Gmail OAuth Credentials | Secret Manager | Shared |
+| Registration Access Code | Secret Manager | Shared |
+| Slack User Token | Secret Manager | Per-user |
+| Gmail Refresh Token | Secret Manager | Per-user |
+| User Config | Firestore | Per-user |
 
 ## Project Structure
 
 ```
 todo-aggregator/
+├── api/
+│   ├── app.py                    # FastAPI application
+│   └── static/
+│       ├── register.html         # Registration form
+│       └── style.css             # Form styling
 ├── src/
-│   ├── orchestrator.py              # Main entry point
-│   ├── config.py                    # Configuration management
+│   ├── orchestrator.py           # Local entry point
+│   ├── config.py                 # Configuration management
+│   ├── gcp/
+│   │   ├── firestore_client.py   # Firestore operations
+│   │   └── secret_manager.py     # Secret Manager operations
 │   ├── mcp_clients/
-│   │   ├── notion_client.py         # Notion API client
-│   │   ├── slack_client.py          # Slack API client
-│   │   ├── gmail_client.py          # Gmail API client
-│   │   └── zoom_client.py           # Zoom API client
+│   │   ├── notion_client.py      # Notion API client
+│   │   ├── slack_client.py       # Slack API client
+│   │   ├── gmail_client.py       # Gmail API client
+│   │   └── zoom_client.py        # Zoom API client
 │   └── processors/
-│       └── claude_processor.py      # AI extraction & deduplication
+│       └── claude_processor.py   # AI extraction & deduplication
 ├── scripts/
-│   └── gmail_oauth_setup.py         # Gmail OAuth helper
+│   └── gmail_oauth_setup.py      # Gmail OAuth helper
 ├── tests/
-│   ├── test_slack_connection.py
-│   ├── test_gmail_connection.py
 │   └── ...
-├── .github/
-│   └── workflows/
-│       └── todo-aggregator.yml      # GitHub Actions config
-├── .env.example                     # Environment template
+├── Dockerfile                    # Cloud Run container
+├── .env.example                  # Environment template
 └── requirements.txt
 ```
 
 ## Features
 
-### Intelligence Layer (Phase 5)
+### Intelligence Layer
 - **Priority Scoring**: Detects urgency keywords (urgent, ASAP, blocker, P0)
 - **Category Tagging**: Auto-categorizes (follow-up, review, meeting, technical, etc.)
 - **Due Date Inference**: Converts "by Friday" or "next week" to actual dates
 
-### Source URLs (Phase 6)
+### Source URLs
 - Every todo links back to its original message
 - Click to jump directly to Slack conversation, Gmail thread, or Zoom meeting
 
@@ -224,6 +264,63 @@ FILTER_MY_TODOS_ONLY=true
 | `HIGH_PRIORITY_KEYWORDS` | `urgent,asap,critical,today,p0,immediately,blocker` | Priority triggers |
 | `COMPLETION_CONFIDENCE_THRESHOLD` | `0.85` | Confidence level for auto-completing (below = "Done?") |
 
+## API Reference
+
+### POST /run-all
+
+Process all enabled users (used by Cloud Scheduler).
+
+**Authentication**: OIDC token or X-API-Secret header
+
+**Response**:
+```json
+{
+  "processed": 3,
+  "successful": 3,
+  "failed": 0
+}
+```
+
+### POST /run/{user_id}
+
+Process a single user by ID.
+
+**Headers**: `X-API-Secret` required
+
+**Response**:
+```json
+{
+  "created": 3,
+  "skipped": 8,
+  "completed": 2,
+  "duration_seconds": 180.5
+}
+```
+
+### GET /trigger/{user_id}/{token}
+
+Personal trigger URL for users to run on-demand.
+
+**Response**: HTML confirmation page
+
+### POST /register
+
+Register a new user (form submission).
+
+**Body**: Form data with access_code, credentials, etc.
+
+### GET /health
+
+Health check endpoint.
+
+**Response**:
+```json
+{
+  "status": "ok",
+  "timestamp": "2024-12-04T12:00:00.000000"
+}
+```
+
 ## Development
 
 ### Run Tests
@@ -239,15 +336,35 @@ black src/
 ruff check src/
 ```
 
+### Deploy to Cloud Run
+
+```bash
+# Build and deploy via Cloud Build
+gcloud builds submit \
+  --tag us-central1-docker.pkg.dev/todo-aggregator-480119/todo-aggregator/api:latest
+
+# Deploy to Cloud Run
+gcloud run deploy todo-aggregator \
+  --image us-central1-docker.pkg.dev/todo-aggregator-480119/todo-aggregator/api:latest \
+  --region us-central1 \
+  --port 8000
+```
+
 ### View Logs
 
-- Console output during execution
-- GitHub Actions: Download from **Artifacts** after each run
+```bash
+# Recent logs
+gcloud logging read 'resource.type="cloud_run_revision" resource.labels.service_name="todo-aggregator"' \
+  --project=todo-aggregator-480119 --limit=50
+
+# Or view in GCP Console
+# https://console.cloud.google.com/run/detail/us-central1/todo-aggregator/logs?project=todo-aggregator-480119
+```
 
 ## Troubleshooting
 
 ### "Missing required configuration"
-Check that required secrets are set in GitHub repo settings (not environment secrets).
+Check that required secrets are set in GCP Secret Manager.
 
 ### Gmail authentication errors
 Re-run `scripts/gmail_oauth_setup.py` to refresh your token.
@@ -263,201 +380,6 @@ The Notion integration needs "Insert comments" capability. Go to https://www.not
 
 ### Zoom meetings not appearing
 The Zoom API only returns meetings **you hosted**. Meetings you attended (hosted by others) are captured via Zoom AI Companion emails instead. Make sure Gmail integration is enabled to capture these.
-
-## Multi-User Setup with Zapier
-
-For distributing the aggregator to multiple users in your organization.
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Zapier (per user)                        │
-│                                                             │
-│  Trigger: Schedule (daily 7am PT)                           │
-│      ↓                                                      │
-│  Action: Webhook POST to Cloud Run API                      │
-│     Headers: X-API-Secret: {{secret}}                       │
-│     Body: { user credentials }                              │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Cloud Run API (shared)                         │
-│                                                             │
-│  POST /run                                                  │
-│  ├── Fetch Slack messages                                   │
-│  ├── Fetch Gmail threads                                    │
-│  ├── Extract todos via Claude                               │
-│  ├── Deduplicate against existing                           │
-│  ├── Detect completed todos                                 │
-│  └── Write to user's Notion database                        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Credential Types
-
-| Credential | Shared/Per-User | Where Stored |
-|------------|-----------------|--------------|
-| `ANTHROPIC_API_KEY` | Shared | Cloud Run env |
-| `GMAIL_CLIENT_ID` | Shared | Cloud Run env |
-| `GMAIL_CLIENT_SECRET` | Shared | Cloud Run env |
-| `API_SECRET` | Shared | Cloud Run env + Zapier |
-| `slack_token` | Per-user | Zapier webhook body |
-| `gmail_refresh_token` | Per-user | Zapier webhook body |
-| `notion_api_key` | Per-user | Zapier webhook body |
-| `notion_database_id` | Per-user | Zapier webhook body |
-
-### User Onboarding (~15 min per user)
-
-#### Step 1: Notion Setup (5 min)
-
-1. User duplicates your Notion template database
-2. User creates a Notion integration at https://www.notion.so/my-integrations
-   - Give it a name like "Todo Aggregator"
-   - Copy the **Internal Integration Secret**
-3. User shares their database with the integration (click Share → Invite → select integration)
-4. Get the database ID from the URL: `notion.so/[workspace]/[DATABASE_ID]?v=...`
-
-User provides you: **Notion API Key** + **Database ID**
-
-#### Step 2: Slack Setup (2 min)
-
-1. Go to https://api.slack.com/apps (your company's Slack app)
-2. User OAuth Token is under **OAuth & Permissions** → **User OAuth Token** (starts with `xoxp-`)
-
-User provides you: **Slack User Token**
-
-#### Step 3: Gmail Setup (5 min)
-
-1. User runs the OAuth setup script:
-   ```bash
-   python scripts/gmail_oauth_setup.py /path/to/google-credentials.json
-   ```
-2. Browser opens, user authorizes with their Google account
-3. Script outputs the refresh token
-
-User provides you: **Gmail Refresh Token**
-
-#### Step 4: Create Zapier Zap (2 min)
-
-1. **Trigger**: Schedule by Zapier
-   - Every Day at 7:00 AM (or preferred time)
-
-2. **Action**: Webhooks by Zapier → POST
-   - **URL**: `https://todo-aggregator-908833572352.us-central1.run.app/run`
-   - **Payload Type**: JSON
-   - **Headers**:
-     ```
-     X-API-Secret: [your API secret]
-     Content-Type: application/json
-     ```
-   - **Data**:
-     ```json
-     {
-       "slack_token": "xoxp-user-token",
-       "gmail_refresh_token": "user-refresh-token",
-       "notion_api_key": "secret_user-notion-key",
-       "notion_database_id": "user-database-id",
-       "notion_meetings_db_id": "",
-       "user_name": "FirstName",
-       "user_email": "user@company.com",
-       "user_slack_username": "User Name"
-     }
-     ```
-
-3. Turn on the Zap
-
-### Notion Database Template
-
-Create a template database with these properties:
-
-| Property | Type | Options |
-|----------|------|---------|
-| Task | Title | - |
-| Status | Select | Open, In Progress, Done, Done? |
-| Source | Multi-select | slack, gmail, zoom, notion |
-| Source URL | URL | - |
-| Assigned To | Rich text | - |
-| Due Date | Date | - |
-| Priority | Select | high, medium, low |
-| Category | Multi-select | follow-up, review, meeting, technical, discussion, approval |
-| Created | Created time | - |
-| Completed | Date | - |
-| Confidence | Number | Format: Percent |
-| Dedupe Hash | Text | - |
-
-### API Reference
-
-#### POST /run
-
-Run the todo aggregator for a user.
-
-**Headers:**
-- `X-API-Secret`: Required. Shared API secret.
-- `Content-Type`: `application/json`
-
-**Body:**
-```json
-{
-  "slack_token": "xoxp-...",
-  "gmail_refresh_token": "1//...",
-  "notion_api_key": "secret_...",
-  "notion_database_id": "abc123...",
-  "notion_meetings_db_id": "",
-  "user_name": "Clay",
-  "user_email": "clay@company.com",
-  "user_slack_username": "Clay Sader"
-}
-```
-
-**Response:**
-```json
-{
-  "created": 3,
-  "skipped": 8,
-  "completed": 2,
-  "duration_seconds": 180.5
-}
-```
-
-#### GET /health
-
-Health check endpoint.
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "timestamp": "2024-12-04T12:00:00.000000"
-}
-```
-
-### Updating the Deployment
-
-When you make code changes:
-
-```bash
-# Build and deploy via Cloud Build
-gcloud builds submit \
-  --tag us-central1-docker.pkg.dev/todo-aggregator-480119/todo-aggregator/api:latest
-
-# Deploy to Cloud Run
-gcloud run deploy todo-aggregator \
-  --image us-central1-docker.pkg.dev/todo-aggregator-480119/todo-aggregator/api:latest \
-  --region us-central1 \
-  --port 8000
-```
-
-### Viewing Logs
-
-```bash
-# Recent logs
-gcloud run services logs read todo-aggregator --region us-central1
-
-# Or view in GCP Console
-# https://console.cloud.google.com/run/detail/us-central1/todo-aggregator/logs?project=todo-aggregator-480119
-```
 
 ## License
 
