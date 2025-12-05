@@ -38,6 +38,7 @@ app = FastAPI(
 
 # Environment variables (shared across all users)
 API_SECRET = os.environ.get("API_SECRET", "")
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "")
 GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
 
@@ -55,7 +56,6 @@ class RunRequest(BaseModel):
     # User credentials (from Zapier webhook config)
     slack_token: str = ""
     gmail_refresh_token: str = ""
-    notion_api_key: str
     notion_database_id: str
     notion_meetings_db_id: str = ""
 
@@ -187,8 +187,11 @@ async def run_aggregator(
             )
             logger.info("Initialized Gmail client")
 
+        if not NOTION_API_KEY:
+            raise HTTPException(500, "NOTION_API_KEY not configured on server")
+
         notion = NotionClient(
-            api_key=request.notion_api_key,
+            api_key=NOTION_API_KEY,
             database_id=request.notion_database_id,
             meetings_db_id=request.notion_meetings_db_id or None,
         )

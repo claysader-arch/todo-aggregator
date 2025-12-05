@@ -89,28 +89,17 @@ Welcome! This guide will help you set up automatic todo extraction from Slack, G
 
 ## Step 1: Notion Setup (Required)
 
-### 1.1 Create Internal Integration
-1. Go to [notion.so/my-integrations](https://notion.so/my-integrations)
-2. Click "+ New integration"
-3. Name it "Todo Aggregator"
-4. Select your workspace
-5. Under Capabilities, enable:
-   - ✅ Read content
-   - ✅ Update content
-   - ✅ Insert content
-   - ✅ Insert comments
-6. Click "Save changes"
-7. Copy the "Internal Integration Secret" (starts with `secret_`)
+### 1.1 Connect Your Database
+1. Open your Todos database in Notion
+2. Click the **"..."** menu in the top right
+3. Select **"Connections"** → **"Connect to"** → **"Todo Aggregator"**
 
-### 1.2 Connect Database
-1. Open the Todos database below
-2. Click "..." menu → "Connections" → "Connect to" → "Todo Aggregator"
-3. Copy the database ID from the URL:
-   - URL format: `notion.so/[workspace]/[DATABASE_ID]?v=...`
-   - Copy just the 32-character ID
+### 1.2 Get Your Database ID
+1. Open the Todos database in full page view
+2. Look at the URL: `notion.so/[workspace]/[DATABASE_ID]?v=...`
+3. Copy just the 32-character ID (the part before `?v=`)
 
 ### 1.3 Your Notion Credentials
-- **Notion API Key**: `secret_xxxxxxxxxxxxxxxxxxxxxxx`
 - **Database ID**: `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
 ---
@@ -182,7 +171,6 @@ This will open a browser, authenticate, and print your refresh token.
 {
   "slack_token": "xoxp-your-token-here",
   "gmail_refresh_token": "1//your-refresh-token",
-  "notion_api_key": "secret_your-notion-key",
   "notion_database_id": "your-database-id",
   "notion_meetings_db_id": "",
   "user_name": "Your Name",
@@ -263,7 +251,6 @@ This will open a browser, authenticate, and print your refresh token.
 
 | Field | Placeholder Text | Required | Help Text |
 |-------|------------------|----------|-----------|
-| `notion_api_key` | `secret_xxx` | Yes | Your Notion Internal Integration Secret. Get it from notion.so/my-integrations |
 | `notion_database_id` | `xxx` | Yes | The 32-character ID from your Todos database URL |
 | `slack_token` | `xoxp-xxx` | Yes | Your Slack User OAuth Token from Step 2. |
 | `gmail_refresh_token` | `1//xxx` | Yes | Your Gmail refresh token from Step 3. |
@@ -276,7 +263,6 @@ This will open a browser, authenticate, and print your refresh token.
 
 ```json
 {
-  "notion_api_key": "",
   "notion_database_id": "",
   "notion_meetings_db_id": "",
   "slack_token": "",
@@ -409,31 +395,13 @@ Before you begin, make sure you have:
 
 ## Step 1: Notion Setup
 
-### 1.1 Create a Notion Integration
-
-1. Go to **[notion.so/my-integrations](https://www.notion.so/my-integrations)**
-2. Click **"+ New integration"**
-3. Fill in:
-   - **Name**: `Todo Aggregator`
-   - **Associated workspace**: Select your workspace
-4. Under **Capabilities**, ensure these are enabled:
-   - ✅ Read content
-   - ✅ Update content
-   - ✅ Insert content
-   - ✅ Insert comments
-5. Click **"Save changes"**
-6. Copy your **Internal Integration Secret** (starts with `secret_`)
-
-> 💡 Save this somewhere safe - you'll need it for Zapier
-
-### 1.2 Connect This Database
+### 1.1 Connect Your Database
 
 1. Go back to the **Todos database** on the main page
 2. Click the **"..."** menu in the top right
-3. Select **"Connections"** → **"Connect to"**
-4. Find and select **"Todo Aggregator"**
+3. Select **"Connections"** → **"Connect to"** → **"Todo Aggregator"**
 
-### 1.3 Get Your Database ID
+### 1.2 Get Your Database ID
 
 1. Open the Todos database in full page view
 2. Look at the URL: `notion.so/[workspace]/[DATABASE_ID]?v=...`
@@ -445,7 +413,6 @@ Before you begin, make sure you have:
 
 | Credential | Value |
 |------------|-------|
-| **Notion API Key** | `secret_________________________` |
 | **Database ID** | `________________________________` |
 
 ---
@@ -573,7 +540,6 @@ python gmail_oauth_setup.py
 
 | Key | Value |
 |-----|-------|
-| `notion_api_key` | Your Notion API key from Step 1 |
 | `notion_database_id` | Your Database ID from Step 1 |
 | `slack_token` | Your Slack token from Step 2 |
 | `gmail_refresh_token` | Your Gmail refresh token from Step 3 |
