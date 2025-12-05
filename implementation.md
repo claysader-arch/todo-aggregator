@@ -117,30 +117,13 @@ Welcome! This guide will help you set up automatic todo extraction from Slack, G
 
 ## Step 2: Slack Setup (Required)
 
-### 2.1 Create Slack App
-1. Go to [api.slack.com/apps](https://api.slack.com/apps)
-2. Click "Create New App" → "From scratch"
-3. Name: "Todo Aggregator", select your workspace
+### 2.1 Install the Todo Aggregator App
+1. Click this link: [Install Todo Aggregator for Slack](https://matterintelligence.slack.com/oauth?client_id=5416048952740.10046227645252&scope=&user_scope=channels%3Ahistory%2Cchannels%3Aread%2Cgroups%3Ahistory%2Cgroups%3Aread%2Cim%3Ahistory%2Cim%3Aread%2Cmpim%3Ahistory%2Cmpim%3Aread%2Cusers%3Aread&redirect_uri=&state=&granular_bot_scope=1&single_channel=0&install_redirect=&tracked=1&user_default=0&team=)
+2. Select your workspace (if prompted)
+3. Review permissions and click "Allow"
+4. Copy your "User OAuth Token" (starts with `xoxp-`)
 
-### 2.2 Configure OAuth Scopes
-1. Go to "OAuth & Permissions"
-2. Under "User Token Scopes", add:
-   - `channels:history` - Read public channel messages
-   - `channels:read` - List channels
-   - `groups:history` - Read private channel messages
-   - `groups:read` - List private channels
-   - `im:history` - Read DMs
-   - `im:read` - List DMs
-   - `mpim:history` - Read group DMs
-   - `mpim:read` - List group DMs
-   - `users:read` - Get user display names
-
-### 2.3 Install & Get Token
-1. Click "Install to Workspace"
-2. Authorize the app
-3. Copy "User OAuth Token" (starts with `xoxp-`)
-
-### 2.4 Your Slack Credentials
+### 2.2 Your Slack Credentials
 - **Slack User Token**: `xoxp-xxxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxxx`
 
 ---
@@ -469,39 +452,13 @@ Before you begin, make sure you have:
 
 ## Step 2: Slack Setup
 
-### 2.1 Create a Slack App
+### 2.1 Install the Todo Aggregator App
 
-1. Go to **[api.slack.com/apps](https://api.slack.com/apps)**
-2. Click **"Create New App"** → **"From scratch"**
-3. Fill in:
-   - **App Name**: `Todo Aggregator`
-   - **Workspace**: Select your workspace
-4. Click **"Create App"**
-
-### 2.2 Configure Permissions
-
-1. In the left sidebar, click **"OAuth & Permissions"**
-2. Scroll to **"User Token Scopes"**
-3. Click **"Add an OAuth Scope"** and add ALL of these:
-
-| Scope | Purpose |
-|-------|---------|
-| `channels:history` | Read public channel messages |
-| `channels:read` | List public channels |
-| `groups:history` | Read private channel messages |
-| `groups:read` | List private channels |
-| `im:history` | Read direct messages |
-| `im:read` | List direct messages |
-| `mpim:history` | Read group DMs |
-| `mpim:read` | List group DMs |
-| `users:read` | Get user display names |
-
-### 2.3 Install the App
-
-1. Scroll up to **"OAuth Tokens for Your Workspace"**
-2. Click **"Install to Workspace"**
-3. Review permissions and click **"Allow"**
-4. Copy your **User OAuth Token** (starts with `xoxp-`)
+1. Click this link to install: **[Install Todo Aggregator for Slack](https://matterintelligence.slack.com/oauth?client_id=5416048952740.10046227645252&scope=&user_scope=channels%3Ahistory%2Cchannels%3Aread%2Cgroups%3Ahistory%2Cgroups%3Aread%2Cim%3Ahistory%2Cim%3Aread%2Cmpim%3Ahistory%2Cmpim%3Aread%2Cusers%3Aread&redirect_uri=&state=&granular_bot_scope=1&single_channel=0&install_redirect=&tracked=1&user_default=0&team=)**
+2. Select your workspace (if prompted)
+3. Review the permissions and click **"Allow"**
+4. After authorization, you'll see a page with your **User OAuth Token**
+5. Copy the token (starts with `xoxp-`)
 
 > ⚠️ Keep this token secret! Anyone with it can read your Slack messages.
 
