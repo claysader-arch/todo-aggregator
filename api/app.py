@@ -12,7 +12,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Response
 from pydantic import BaseModel
 
 # Add src to path for imports
@@ -67,10 +67,8 @@ class RunRequest(BaseModel):
 class RunResponse(BaseModel):
     """Response from the /run endpoint."""
 
-    created: int
-    skipped: int
-    completed: int
-    duration_seconds: float
+    status: str
+    message: str
 
 
 def send_error_email(user_email: str, user_name: str, error: str) -> None:
@@ -140,34 +138,13 @@ def filter_my_todos(todos: list, user_name: str) -> list:
     return filtered
 
 
-@app.post("/run", response_model=RunResponse)
-async def run_aggregator(
-    request: RunRequest,
-    x_api_secret: str = Header(..., description="API secret for authentication"),
-) -> RunResponse:
-    """Run the todo aggregator for a specific user.
-
-    This endpoint is called by Zapier on a schedule. It:
-    1. Fetches content from Slack, Gmail, and Notion
-    2. Extracts todos using Claude
-    3. Deduplicates against existing todos
-    4. Detects completed todos
-    5. Writes results to Notion
+def process_aggregation(request: RunRequest) -> None:
+    """Background task to run the todo aggregation.
 
     Args:
         request: User credentials and configuration
-        x_api_secret: API secret for authentication
-
-    Returns:
-        Statistics about the run
     """
-    # Validate API secret
-    if not API_SECRET:
-        raise HTTPException(500, "API_SECRET not configured on server")
-    if x_api_secret != API_SECRET:
-        raise HTTPException(401, "Invalid API secret")
-
-    logger.info(f"Running aggregator for {request.user_name}")
+    logger.info(f"Starting background aggregation for {request.user_name}")
     start_time = datetime.now()
 
     try:
@@ -187,7 +164,8 @@ async def run_aggregator(
             logger.info("Initialized Gmail client")
 
         if not NOTION_API_KEY:
-            raise HTTPException(500, "NOTION_API_KEY not configured on server")
+            logger.error("NOTION_API_KEY not configured on server")
+            return
 
         notion = NotionClient(
             api_key=NOTION_API_KEY,
@@ -294,18 +272,52 @@ async def run_aggregator(
         duration = (datetime.now() - start_time).total_seconds()
         logger.info(f"Completed for {request.user_name} in {duration:.1f}s: {stats}")
 
-        return RunResponse(
-            created=stats["created"],
-            skipped=stats["skipped"],
-            completed=stats["completed"],
-            duration_seconds=duration,
-        )
-
     except Exception as e:
         logger.exception(f"Run failed for {request.user_name}: {e}")
         if request.user_email:
             send_error_email(request.user_email, request.user_name, str(e))
-        raise HTTPException(500, f"Run failed: {e}")
+
+
+@app.post("/run", response_model=RunResponse, status_code=202)
+async def run_aggregator(
+    request: RunRequest,
+    background_tasks: BackgroundTasks,
+    x_api_secret: str = Header(..., description="API secret for authentication"),
+) -> RunResponse:
+    """Run the todo aggregator for a specific user.
+
+    This endpoint is called by Zapier on a schedule. It:
+    1. Validates the request
+    2. Queues the aggregation to run in the background
+    3. Returns immediately with 202 Accepted
+
+    Args:
+        request: User credentials and configuration
+        background_tasks: FastAPI background tasks
+        x_api_secret: API secret for authentication
+
+    Returns:
+        Acknowledgment that the job was queued
+    """
+    # Validate API secret
+    if not API_SECRET:
+        raise HTTPException(500, "API_SECRET not configured on server")
+    if x_api_secret != API_SECRET:
+        raise HTTPException(401, "Invalid API secret")
+
+    # Validate NOTION_API_KEY is configured
+    if not NOTION_API_KEY:
+        raise HTTPException(500, "NOTION_API_KEY not configured on server")
+
+    logger.info(f"Queuing aggregation for {request.user_name}")
+
+    # Queue the background task
+    background_tasks.add_task(process_aggregation, request)
+
+    return RunResponse(
+        status="accepted",
+        message=f"Aggregation queued for {request.user_name}. Check Notion for results.",
+    )
 
 
 @app.get("/health")
