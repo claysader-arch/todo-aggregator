@@ -9,16 +9,20 @@ This API provides:
 import hashlib
 import logging
 import os
+import secrets
 import smtplib
 import sys
 from datetime import datetime
 from email.mime.text import MIMEText
 from typing import Optional
+from urllib.parse import urlencode
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Response
+import httpx
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Response, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr
+from starlette.middleware.sessions import SessionMiddleware
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -48,12 +52,23 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# Add session middleware for OAuth state management
+SESSION_SECRET = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    max_age=900,  # 15 minutes
+    same_site="lax",
+    https_only=True,
+)
+
 # Environment variables (shared across all users)
 API_SECRET = os.environ.get("API_SECRET", "")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "")
 GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "")
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "todo-aggregator-480119")
+BASE_URL = os.environ.get("BASE_URL", "https://todo-aggregator-908833572352.us-central1.run.app")
 
 # Initialize GCP clients (lazy loading)
 _firestore: Optional[FirestoreClient] = None
@@ -637,6 +652,220 @@ async def run_aggregator(
         status="accepted",
         message=f"Aggregation queued for {request.user_name}. Check Notion for results.",
     )
+
+
+@app.get("/oauth/gmail/start")
+async def gmail_oauth_start(request: Request):
+    """Initiate Gmail OAuth flow by redirecting to Google's authorization URL.
+
+    This endpoint:
+    1. Generates a CSRF token (state parameter)
+    2. Stores it in the user's session
+    3. Redirects to Google OAuth consent screen
+
+    Returns:
+        Redirect to Google OAuth consent screen
+    """
+    # Generate CSRF token
+    state = secrets.token_hex(32)
+
+    # Store state in session for validation
+    request.session["oauth_state"] = state
+    request.session["oauth_start_time"] = datetime.now().isoformat()
+
+    # Load Gmail OAuth credentials from Secret Manager if not in env
+    gmail_client_id = GMAIL_CLIENT_ID
+    gmail_client_secret = GMAIL_CLIENT_SECRET
+
+    if not gmail_client_id or not gmail_client_secret:
+        # Try loading from Secret Manager
+        secrets_client = get_secrets()
+        gmail_client_id = gmail_client_id or secrets_client.get_secret("gmail-client-id")
+        gmail_client_secret = gmail_client_secret or secrets_client.get_secret("gmail-client-secret")
+
+    if not gmail_client_id:
+        raise HTTPException(500, "Gmail OAuth not configured (missing client_id)")
+
+    # Build Google OAuth URL
+    params = {
+        "client_id": gmail_client_id,
+        "redirect_uri": f"{BASE_URL}/oauth/gmail/callback",
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/gmail.readonly",
+        "access_type": "offline",  # Required for refresh token
+        "prompt": "consent",  # Force consent to ensure refresh token
+        "state": state,
+    }
+
+    google_oauth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    return RedirectResponse(google_oauth_url)
+
+
+@app.get("/oauth/gmail/callback")
+async def gmail_oauth_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """Handle OAuth callback from Google.
+
+    This endpoint:
+    1. Validates the state parameter (CSRF protection)
+    2. Exchanges authorization code for tokens
+    3. Returns HTML with postMessage to send token to parent window
+
+    Query parameters:
+        code: Authorization code from Google
+        state: CSRF token to validate
+        error: Error from Google (if authorization denied)
+
+    Returns:
+        HTML page that uses postMessage to send token to parent window
+    """
+    # Handle user denial
+    if error:
+        return HTMLResponse(f"""
+            <html>
+            <head>
+                <title>Authorization Cancelled</title>
+                <style>
+                    body {{ font-family: -apple-system, sans-serif; padding: 2rem; text-align: center; }}
+                    .error {{ color: #dc3545; margin: 2rem 0; }}
+                </style>
+            </head>
+            <body>
+                <h2 class="error">Authorization Cancelled</h2>
+                <p>You cancelled the Gmail authorization.</p>
+                <script>
+                    if (window.opener) {{
+                        window.opener.postMessage({{
+                            type: 'gmail_oauth_error',
+                            error: 'Authorization cancelled by user'
+                        }}, '{BASE_URL}');
+                        setTimeout(() => window.close(), 2000);
+                    }}
+                </script>
+            </body>
+            </html>
+        """)
+
+    # Validate state (CSRF protection)
+    session_state = request.session.get("oauth_state")
+    if not state or not session_state or state != session_state:
+        raise HTTPException(400, "Invalid state parameter (CSRF validation failed)")
+
+    # Check state hasn't expired (15 minutes)
+    start_time_str = request.session.get("oauth_start_time")
+    if start_time_str:
+        start_time = datetime.fromisoformat(start_time_str)
+        if (datetime.now() - start_time).total_seconds() > 900:  # 15 minutes
+            raise HTTPException(400, "OAuth flow expired (please try again)")
+
+    # Validate authorization code
+    if not code:
+        raise HTTPException(400, "Missing authorization code")
+
+    # Load Gmail OAuth credentials
+    gmail_client_id = GMAIL_CLIENT_ID
+    gmail_client_secret = GMAIL_CLIENT_SECRET
+
+    if not gmail_client_id or not gmail_client_secret:
+        # Try loading from Secret Manager
+        secrets_client = get_secrets()
+        gmail_client_id = gmail_client_id or secrets_client.get_secret("gmail-client-id")
+        gmail_client_secret = gmail_client_secret or secrets_client.get_secret("gmail-client-secret")
+
+    if not gmail_client_id or not gmail_client_secret:
+        raise HTTPException(500, "Gmail OAuth not configured")
+
+    # Exchange code for tokens
+    try:
+        token_response = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": gmail_client_id,
+                "client_secret": gmail_client_secret,
+                "redirect_uri": f"{BASE_URL}/oauth/gmail/callback",
+                "grant_type": "authorization_code",
+            },
+            timeout=10.0,
+        )
+        token_response.raise_for_status()
+        tokens = token_response.json()
+
+        refresh_token = tokens.get("refresh_token")
+        if not refresh_token:
+            # This can happen if user already authorized before
+            return HTMLResponse("""
+                <html>
+                <head>
+                    <title>No Refresh Token</title>
+                    <style>
+                        body { font-family: -apple-system, sans-serif; padding: 2rem; max-width: 600px; margin: 0 auto; }
+                        .warning { color: #856404; background: #fff3cd; padding: 1rem; border-radius: 4px; }
+                        ol { text-align: left; }
+                        button { padding: 0.5rem 1rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 1rem; }
+                    </style>
+                </head>
+                <body>
+                    <h2>No Refresh Token Received</h2>
+                    <div class="warning">
+                        <p>Google did not provide a refresh token. This usually means you've already authorized this app.</p>
+                    </div>
+                    <p>To get a new token:</p>
+                    <ol>
+                        <li>Go to <a href="https://myaccount.google.com/permissions" target="_blank">Google Account Permissions</a></li>
+                        <li>Find and remove "Todo Aggregator"</li>
+                        <li>Close this window and try connecting again</li>
+                    </ol>
+                    <button onclick="window.close()">Close Window</button>
+                </body>
+                </html>
+            """)
+
+        # Clear session state (one-time use)
+        request.session.pop("oauth_state", None)
+        request.session.pop("oauth_start_time", None)
+
+        # Success! Send token to parent window
+        return HTMLResponse(f"""
+            <html>
+            <head>
+                <title>Gmail Connected</title>
+                <style>
+                    body {{ font-family: -apple-system, sans-serif; text-align: center; padding: 2rem; }}
+                    .success {{ color: #28a745; font-size: 1.5rem; margin: 2rem 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="success">✓ Gmail Connected!</div>
+                <p>Closing window...</p>
+                <script>
+                    // Send refresh token to parent window
+                    if (window.opener) {{
+                        window.opener.postMessage({{
+                            type: 'gmail_oauth_success',
+                            refresh_token: '{refresh_token}'
+                        }}, '{BASE_URL}');
+
+                        // Close popup after short delay
+                        setTimeout(() => window.close(), 1500);
+                    }} else {{
+                        document.body.innerHTML = '<p>Please close this window and return to the registration form.</p>';
+                    }}
+                </script>
+            </body>
+            </html>
+        """)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Token exchange failed: {e.response.text}")
+        raise HTTPException(500, f"Failed to exchange authorization code: {e.response.text}")
+    except Exception as e:
+        logger.error(f"OAuth callback error: {e}")
+        raise HTTPException(500, f"OAuth error: {str(e)}")
 
 
 @app.get("/health")
