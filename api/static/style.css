@@ -198,6 +198,38 @@ footer a:hover {
     text-decoration: underline;
 }
 
+/* OAuth Button */
+.oauth-btn {
+    padding: 0.5rem 1rem;
+    background-color: #4285f4;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color 0.2s;
+}
+
+.oauth-btn:hover {
+    background-color: #357ae8;
+}
+
+.oauth-btn:disabled {
+    background-color: #9e9e9e;
+    cursor: not-allowed;
+}
+
+.help-text.success {
+    color: #28a745;
+    font-weight: 500;
+}
+
+.hidden {
+    display: none;
+}
+
 /* Responsive */
 @media (max-width: 480px) {
     body {

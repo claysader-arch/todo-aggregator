@@ -63,10 +63,18 @@
 
                 <div class="form-group">
                     <label for="gmail_refresh_token">Gmail Refresh Token *</label>
-                    <input type="password" id="gmail_refresh_token" name="gmail_refresh_token" required
-                           placeholder="1//...">
-                    <span class="help-text">
-                        Starts with <code>1//</code>. See setup guide for instructions.
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <input type="password" id="gmail_refresh_token" name="gmail_refresh_token" required
+                               placeholder="1//..." readonly style="flex: 1;">
+                        <button type="button" id="connect_gmail_btn" class="oauth-btn">
+                            Connect Gmail
+                        </button>
+                    </div>
+                    <span class="help-text" id="gmail_help">
+                        Click "Connect Gmail" to authorize access.
+                    </span>
+                    <span class="help-text success hidden" id="gmail_success">
+                        ✓ Gmail connected successfully!
                     </span>
                 </div>
 
@@ -96,6 +104,74 @@
         const form = document.getElementById('register-form');
         const submitBtn = document.getElementById('submit-btn');
         const messageDiv = document.getElementById('message');
+
+        // Gmail OAuth flow
+        const connectGmailBtn = document.getElementById('connect_gmail_btn');
+        const gmailRefreshTokenInput = document.getElementById('gmail_refresh_token');
+        const gmailHelp = document.getElementById('gmail_help');
+        const gmailSuccess = document.getElementById('gmail_success');
+
+        connectGmailBtn.addEventListener('click', () => {
+            // Open OAuth popup
+            const popup = window.open(
+                '/oauth/gmail/start',
+                'gmail_oauth',
+                'width=600,height=700,left=200,top=100'
+            );
+
+            // Disable button while OAuth in progress
+            connectGmailBtn.disabled = true;
+            connectGmailBtn.textContent = 'Connecting...';
+
+            // Check if popup was blocked
+            if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                alert('Popup blocked! Please allow popups for this site and try again.');
+                connectGmailBtn.disabled = false;
+                connectGmailBtn.textContent = 'Connect Gmail';
+                return;
+            }
+
+            // Monitor popup closure
+            const popupMonitor = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(popupMonitor);
+                    // If token wasn't set, assume cancelled
+                    if (!gmailRefreshTokenInput.value) {
+                        connectGmailBtn.disabled = false;
+                        connectGmailBtn.textContent = 'Connect Gmail';
+                    }
+                }
+            }, 500);
+        });
+
+        // Listen for postMessage from OAuth callback
+        window.addEventListener('message', (event) => {
+            // Validate origin (security)
+            if (event.origin !== window.location.origin) {
+                console.warn('Ignoring message from unknown origin:', event.origin);
+                return;
+            }
+
+            if (event.data.type === 'gmail_oauth_success') {
+                // Populate the refresh token field
+                gmailRefreshTokenInput.value = event.data.refresh_token;
+
+                // Update UI
+                connectGmailBtn.disabled = false;
+                connectGmailBtn.textContent = '✓ Connected';
+                connectGmailBtn.style.backgroundColor = '#28a745';
+                gmailHelp.classList.add('hidden');
+                gmailSuccess.classList.remove('hidden');
+
+                // Remove readonly attribute
+                gmailRefreshTokenInput.removeAttribute('readonly');
+            } else if (event.data.type === 'gmail_oauth_error') {
+                // Show error
+                alert('Gmail connection failed: ' + event.data.error);
+                connectGmailBtn.disabled = false;
+                connectGmailBtn.textContent = 'Connect Gmail';
+            }
+        });
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
