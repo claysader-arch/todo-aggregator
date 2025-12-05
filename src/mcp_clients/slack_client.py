@@ -514,16 +514,81 @@ class SlackClient:
 
     def _get_active_channels(self, days: int = 1) -> List[Dict[str, Any]]:
         """
-        Get channels where the user has recently posted.
+        Get channels where the user has recently posted using Search API.
 
-        Filters to only channels (not DMs) where user is a member and has
-        posted within the lookback period.
+        Uses search.messages with 'from:me' to efficiently find all channels
+        where the user has posted, avoiding the need to check each channel
+        individually. This is ~50x faster than iterating through all channels.
 
         Args:
             days: Number of days to look back for user activity
 
         Returns:
             List of channel conversation objects where user is active
+        """
+        # Build date filter - use days+1 because 'after:' is exclusive
+        date_str = (datetime.now() - timedelta(days=days + 1)).strftime("%Y-%m-%d")
+        query = f"from:me after:{date_str}"
+
+        logger.info(f"Finding active channels via search: {query}")
+
+        try:
+            # Paginate through search results to find all channels
+            active_channel_ids = set()
+            page = 1
+
+            while True:
+                params = {
+                    "query": query,
+                    "sort": "timestamp",
+                    "sort_dir": "desc",
+                    "count": 100,
+                    "page": page,
+                }
+                data = self._make_request("search.messages", params)
+                messages = data.get("messages", {}).get("matches", [])
+                total = data.get("messages", {}).get("total", 0)
+
+                if not messages:
+                    break
+
+                # Extract channel IDs from messages
+                for msg in messages:
+                    channel = msg.get("channel", {})
+                    channel_id = channel.get("id", "")
+                    # Skip DMs (start with D) and MPDMs (start with G for group)
+                    if channel_id and channel_id.startswith("C"):
+                        active_channel_ids.add(channel_id)
+
+                if len(messages) < 100 or page * 100 >= total:
+                    break
+                page += 1
+
+            logger.info(f"Search found {len(active_channel_ids)} active channel IDs")
+
+            if not active_channel_ids:
+                return []
+
+            # Get full channel info for the active channels
+            conversations = self.get_all_conversations()
+            active_channels = [
+                conv for conv in conversations
+                if conv.get("id") in active_channel_ids
+                and not conv.get("is_archived", False)
+            ]
+
+            logger.info(f"Found {len(active_channels)} channels where user is active")
+            return active_channels
+
+        except Exception as e:
+            logger.warning(f"Search-based channel discovery failed: {e}, falling back to iterate")
+            return self._get_active_channels_slow(days)
+
+    def _get_active_channels_slow(self, days: int = 1) -> List[Dict[str, Any]]:
+        """
+        Fallback: Get active channels by iterating through all conversations.
+
+        This is the slow method (~7 min for 100+ channels) used when search fails.
         """
         conversations = self.get_all_conversations()
         my_user_id = self._get_my_user_id()
@@ -549,7 +614,7 @@ class SlackClient:
                 logger.debug(f"User is active in {conv_name}")
                 active_channels.append(conv)
 
-        logger.info(f"Found {len(active_channels)} channels where user is active")
+        logger.info(f"Found {len(active_channels)} channels where user is active (slow method)")
         return active_channels
 
     def _user_posted_recently(self, channel_id: str, days: int, my_user_id: str) -> bool:

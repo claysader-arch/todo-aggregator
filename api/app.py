@@ -9,10 +9,8 @@ This API provides:
 import hashlib
 import logging
 import os
-import smtplib
 import sys
 from datetime import datetime
-from email.mime.text import MIMEText
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Header, Response
@@ -29,6 +27,7 @@ from mcp_clients.notion_client import NotionClient
 from processors.claude_processor import ClaudeProcessor
 from gcp.firestore_client import FirestoreClient
 from gcp.secret_manager import SecretManagerClient
+from notifications import send_error_email, send_success_email, send_welcome_email
 
 # Configure logging
 logging.basicConfig(
@@ -79,13 +78,6 @@ def get_secrets() -> SecretManagerClient:
 def get_registration_access_code() -> str:
     """Get the registration access code from Secret Manager."""
     return get_secrets().get_secret("registration-access-code") or ""
-
-# SMTP configuration for error notifications
-SMTP_HOST = os.environ.get("SMTP_HOST", "")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", "noreply@company.com")
 
 
 class RunRequest(BaseModel):
@@ -155,96 +147,6 @@ def generate_user_id(email: str) -> str:
     return hashlib.sha256(email.lower().encode()).hexdigest()[:8]
 
 
-def send_error_email(user_email: str, user_name: str, error: str) -> None:
-    """Send email notification when aggregator run fails.
-
-    Args:
-        user_email: User's email address
-        user_name: User's display name
-        error: Error message
-    """
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASSWORD, user_email]):
-        logger.warning("SMTP not configured or no user email, skipping error notification")
-        return
-
-    msg = MIMEText(f"""Hi {user_name},
-
-Your Todo Aggregator run failed this morning.
-
-Error: {error}
-
-This usually means one of your tokens expired. Please reach out to get it fixed.
-
-- Todo Aggregator Bot
-""")
-    msg["Subject"] = "Todo Aggregator Run Failed"
-    msg["From"] = SMTP_FROM
-    msg["To"] = user_email
-
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        logger.info(f"Sent error notification to {user_email}")
-    except Exception as e:
-        logger.error(f"Failed to send error email: {e}")
-
-
-def send_welcome_email(
-    user_email: str,
-    user_name: str,
-    user_id: str,
-    personal_token: str,
-    notion_database_id: str,
-) -> None:
-    """Send welcome email with personal trigger URL.
-
-    Args:
-        user_email: User's email address
-        user_name: User's display name
-        user_id: User's ID
-        personal_token: User's personal trigger token
-        notion_database_id: User's Notion database ID
-    """
-    if not all([SMTP_HOST, SMTP_USER, SMTP_PASSWORD, user_email]):
-        logger.warning("SMTP not configured or no user email, skipping welcome email")
-        return
-
-    # Build the trigger URL (will be filled in with actual host in production)
-    # For now, use a placeholder that works with Cloud Run
-    base_url = os.environ.get("BASE_URL", "https://todo-aggregator-908833572352.us-central1.run.app")
-    trigger_url = f"{base_url}/trigger/{user_id}/{personal_token}"
-    notion_url = f"https://notion.so/{notion_database_id}"
-
-    msg = MIMEText(f"""Hi {user_name},
-
-Your Todo Aggregator is ready! It will run automatically every day at 7am PT.
-
-Want to run it now? Click here:
-{trigger_url}
-
-You can bookmark this link or save it to run anytime.
-
-Your todos will appear in your Notion database:
-{notion_url}
-
-- Todo Aggregator
-""")
-    msg["Subject"] = "Todo Aggregator - You're All Set!"
-    msg["From"] = SMTP_FROM
-    msg["To"] = user_email
-
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        logger.info(f"Sent welcome email to {user_email}")
-    except Exception as e:
-        logger.error(f"Failed to send welcome email: {e}")
-
-
 def filter_my_todos(todos: list, user_name: str) -> list:
     """Filter todos to only include those assigned to the user.
 
@@ -276,11 +178,14 @@ def filter_my_todos(todos: list, user_name: str) -> list:
     return filtered
 
 
-def process_aggregation(request: RunRequest) -> None:
+def process_aggregation(request: RunRequest) -> dict:
     """Background task to run the todo aggregation.
 
     Args:
         request: User credentials and configuration
+
+    Returns:
+        Dict with stats: created, completed, slack_count, gmail_count
     """
     logger.info(f"Starting background aggregation for {request.user_name}")
     start_time = datetime.now()
@@ -303,7 +208,7 @@ def process_aggregation(request: RunRequest) -> None:
 
         if not NOTION_API_KEY:
             logger.error("NOTION_API_KEY not configured on server")
-            return
+            return {"created": 0, "completed": 0, "slack_count": 0, "gmail_count": 0}
 
         notion = NotionClient(
             api_key=NOTION_API_KEY,
@@ -409,6 +314,29 @@ def process_aggregation(request: RunRequest) -> None:
 
         duration = (datetime.now() - start_time).total_seconds()
         logger.info(f"Completed for {request.user_name} in {duration:.1f}s: {stats}")
+
+        # Track source counts
+        slack_count = len(raw_content.get("slack", []))
+        gmail_count = len(raw_content.get("gmail", []))
+
+        # Send success email
+        if request.user_email:
+            send_success_email(
+                user_email=request.user_email,
+                user_name=request.user_name,
+                notion_database_id=request.notion_database_id,
+                created=stats["created"],
+                completed=stats["completed"],
+                slack_count=slack_count,
+                gmail_count=gmail_count,
+            )
+
+        return {
+            "created": stats["created"],
+            "completed": stats["completed"],
+            "slack_count": slack_count,
+            "gmail_count": gmail_count,
+        }
 
     except Exception as e:
         logger.exception(f"Run failed for {request.user_name}: {e}")

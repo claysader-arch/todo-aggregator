@@ -163,7 +163,13 @@ Analyze each conversation or email thread as a whole. Consider the full context 
 - The message explicitly addresses {primary_name} (e.g., "Hey {primary_name},", "@{slack_username}")
 If a conversation is between other people and {primary_name} is just observing the channel, do NOT extract todos from it.
 
-**Delegation removes ownership.** If {primary_name} asks someone for help and they agree to do it (e.g., "I'll take care of it", "I can handle that"), the task now belongs to that person, not {primary_name}.
+**Outbound requests are NOT the user's todos.** When {primary_name} ASKS someone else to do something (especially in DMs), the task belongs to the OTHER person, not {primary_name}. Look for patterns like:
+- "Could you...", "Can you...", "Would you mind..."
+- "Please send me...", "I need you to..."
+- Direct imperatives addressed to the conversation partner
+In a "DM with [Name]", if @{slack_username} is the one asking/requesting, the todo belongs to [Name], NOT to {primary_name}.
+
+**Delegation removes ownership.** If {primary_name} asks someone for help and they agree (or even if they haven't responded yet), the task belongs to that person, not {primary_name}.
 
 **Do NOT create todos for:**
 - Calendar invites or meeting requests - these are already on the calendar
