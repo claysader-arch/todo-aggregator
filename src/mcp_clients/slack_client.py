@@ -13,9 +13,14 @@ logger = logging.getLogger(__name__)
 class SlackClient:
     """Client for interacting with Slack API to fetch conversation messages."""
 
-    def __init__(self):
-        """Initialize Slack client with User OAuth token."""
-        self.user_token = Config.SLACK_USER_TOKEN
+    def __init__(self, token: Optional[str] = None):
+        """Initialize Slack client with User OAuth token.
+
+        Args:
+            token: Optional Slack User OAuth Token (xoxp-...).
+                   Falls back to Config.SLACK_USER_TOKEN if not provided.
+        """
+        self.user_token = token or Config.SLACK_USER_TOKEN
         self.base_url = "https://slack.com/api"
         self.user_cache: Dict[str, str] = {}  # Cache user ID -> display name
         self._workspace_name: Optional[str] = None  # Cache workspace name
@@ -80,14 +85,15 @@ class SlackClient:
         return f"https://{workspace}.slack.com/archives/{channel_id}/p{ts_no_dot}"
 
     def _make_request(
-        self, method: str, params: Optional[Dict] = None
+        self, method: str, params: Optional[Dict] = None, retries: int = 3
     ) -> Dict[str, Any]:
         """
-        Make authenticated request to Slack API.
+        Make authenticated request to Slack API with rate limiting and retries.
 
         Args:
             method: API method name (e.g., 'conversations.list')
             params: Optional parameters for the request
+            retries: Number of retries for rate-limited requests
 
         Returns:
             Response JSON data
@@ -101,21 +107,49 @@ class SlackClient:
             "Content-Type": "application/x-www-form-urlencoded",
         }
 
-        try:
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
+        for attempt in range(retries + 1):
+            try:
+                response = requests.get(url, headers=headers, params=params)
 
-            if not data.get("ok", False):
-                error = data.get("error", "Unknown error")
-                logger.error(f"Slack API error for {method}: {error}")
-                raise Exception(f"Slack API error: {error}")
+                # Handle rate limiting with exponential backoff
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 2))
+                    if attempt < retries:
+                        sleep_time = min(retry_after, 5) * (attempt + 1)
+                        logger.debug(f"Rate limited on {method}, sleeping {sleep_time}s (attempt {attempt + 1})")
+                        time.sleep(sleep_time)
+                        continue
+                    else:
+                        logger.warning(f"Rate limited on {method} after {retries} retries")
+                        raise Exception(f"Rate limited: {method}")
 
-            return data
+                response.raise_for_status()
+                data = response.json()
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error making Slack API request to {method}: {e}")
-            raise
+                if not data.get("ok", False):
+                    error = data.get("error", "Unknown error")
+                    # Handle rate_limited error in response body
+                    if error == "ratelimited":
+                        if attempt < retries:
+                            sleep_time = 2 * (attempt + 1)
+                            logger.debug(f"Rate limited (body) on {method}, sleeping {sleep_time}s")
+                            time.sleep(sleep_time)
+                            continue
+                    logger.error(f"Slack API error for {method}: {error}")
+                    raise Exception(f"Slack API error: {error}")
+
+                # Small delay between successful requests to avoid hitting limits
+                time.sleep(0.1)
+                return data
+
+            except requests.exceptions.RequestException as e:
+                if attempt < retries and "429" in str(e):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                logger.error(f"Error making Slack API request to {method}: {e}")
+                raise
+
+        raise Exception(f"Max retries exceeded for {method}")
 
     def _get_user_name(self, user_id: str) -> str:
         """
@@ -290,13 +324,20 @@ class SlackClient:
 
             # Fetch thread replies for messages that are thread parents
             # Use 'oldest' filter here to only get recent thread activity
+            # Limit to 5 threads per channel to avoid rate limiting
             thread_messages = []
             threads_with_recent_activity = set()
+            threads_fetched = 0
+            max_threads_per_channel = 5
+
             for msg in messages:
+                if threads_fetched >= max_threads_per_channel:
+                    break
                 reply_count = msg.get("reply_count", 0)
                 if reply_count > 0:
                     thread_ts = msg.get("thread_ts") or msg.get("ts")
                     replies = self._get_thread_replies(channel_id, thread_ts, days=days)
+                    threads_fetched += 1
                     if replies:
                         threads_with_recent_activity.add(thread_ts)
                         thread_messages.extend(replies)
@@ -398,11 +439,8 @@ class SlackClient:
                         logger.debug(f"Skipping {conv_name} - user has no messages in this channel")
                         continue
 
-            # Format messages for this conversation
-            formatted_messages = []
-            # Track the most recent message timestamp for the conversation URL
-            latest_ts = None
-
+            # Create one content entry per message (for accurate source URL mapping)
+            message_count = 0
             for msg in reversed(messages):  # Oldest first for context
                 ts = msg.get("ts", "0")
                 ts_float = float(ts)
@@ -413,32 +451,25 @@ class SlackClient:
 
                 text = msg.get("text", "")
                 if text:
-                    formatted_messages.append(f"[{timestamp}] @{user_name}: {text}")
-                    # Track latest message for URL
-                    if latest_ts is None or ts_float > float(latest_ts):
-                        latest_ts = ts
+                    formatted_msg = f"[{timestamp}] @{user_name}: {text}"
+                    source_url = self._build_message_url(channel_id, ts)
 
-            if formatted_messages:
-                header = f"=== Slack: {conv_name} ==="
-                conversation_text = header + "\n" + "\n".join(formatted_messages)
+                    content.append({
+                        "text": f"=== Slack: {conv_name} ===\n{formatted_msg}",
+                        "source_url": source_url,
+                        "source": "slack",
+                        "metadata": {
+                            "channel_id": channel_id,
+                            "channel_name": conv_name,
+                            "message_ts": ts,
+                        }
+                    })
+                    message_count += 1
 
-                # Build URL to the most recent message in the conversation
-                source_url = self._build_message_url(channel_id, latest_ts) if latest_ts else None
+            if message_count > 0:
+                logger.debug(f"Collected {message_count} messages from {conv_name}")
 
-                content.append({
-                    "text": conversation_text,
-                    "source_url": source_url,
-                    "source": "slack",
-                    "metadata": {
-                        "channel_id": channel_id,
-                        "channel_name": conv_name,
-                        "message_ts": latest_ts,
-                        "message_count": len(formatted_messages),
-                    }
-                })
-                logger.debug(f"Collected {len(formatted_messages)} messages from {conv_name}")
-
-        logger.info(f"Collected messages from {len(content)} Slack conversations")
+        logger.info(f"Collected {len(content)} Slack messages for todo extraction")
         return content
 
     def test_connection(self) -> bool:

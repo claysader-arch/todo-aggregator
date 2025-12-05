@@ -2,6 +2,7 @@
 
 import logging
 import time
+import urllib.parse
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import requests
@@ -170,19 +171,36 @@ class ZoomClient:
             logger.error(f"Error fetching recent meetings: {e}")
             return []
 
+    def _encode_meeting_id(self, meeting_id: str) -> str:
+        """
+        Double URL-encode meeting ID/UUID for Zoom API.
+
+        Zoom UUIDs can contain special characters like / and = that need
+        double URL-encoding per Zoom API requirements.
+
+        Args:
+            meeting_id: Meeting ID or UUID
+
+        Returns:
+            Double URL-encoded string safe for API endpoints
+        """
+        return urllib.parse.quote(urllib.parse.quote(str(meeting_id), safe=''), safe='')
+
     def get_meeting_summary(self, meeting_id: str) -> Optional[Dict[str, Any]]:
         """
         Get AI-generated summary for a meeting.
 
         Args:
-            meeting_id: Zoom meeting ID
+            meeting_id: Zoom meeting ID or UUID
 
         Returns:
             Meeting summary data or None
         """
         try:
             # Note: This endpoint requires Zoom AI Companion to be enabled
-            data = self._make_request(f"/meetings/{meeting_id}/meeting_summary")
+            # Double URL-encode for UUIDs with special characters (/, =, etc.)
+            encoded_id = self._encode_meeting_id(meeting_id)
+            data = self._make_request(f"/meetings/{encoded_id}/meeting_summary")
             logger.info(f"Retrieved summary for meeting {meeting_id}")
             return data
 
@@ -201,14 +219,16 @@ class ZoomClient:
         Get transcript for a meeting.
 
         Args:
-            meeting_id: Zoom meeting ID
+            meeting_id: Zoom meeting ID or UUID
 
         Returns:
             Transcript text or None
         """
         try:
             # Get list of transcript files
-            data = self._make_request(f"/meetings/{meeting_id}/recordings")
+            # Double URL-encode for UUIDs with special characters (/, =, etc.)
+            encoded_id = self._encode_meeting_id(meeting_id)
+            data = self._make_request(f"/meetings/{encoded_id}/recordings")
 
             # Find transcript file
             recording_files = data.get("recording_files", [])

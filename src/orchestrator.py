@@ -223,22 +223,17 @@ def update_notion_db(todos: list, completions: list, notion: NotionClient) -> di
     """
     logger.info("Updating Notion database...")
 
-    stats = {"created": 0, "updated": 0, "completed": 0}
+    stats = {"created": 0, "skipped": 0, "completed": 0}
 
     # Process new and duplicate todos
     for todo in todos:
         if "_update_id" in todo:
-            # This is a duplicate - update existing todo with new source
-            existing_id = todo["_update_id"]
-            # Add the new source to the existing todo's sources
-            update = {}
-            if "source" in todo and todo["source"]:
-                # We'd need to fetch and merge sources, for now just log
-                logger.info(f"Would update existing todo {existing_id} with new source: {todo['source']}")
-            stats["updated"] += 1
+            # Duplicate detected - todo already exists in Notion, skip creation
+            logger.debug(f"Skipping duplicate todo (already exists): {todo.get('task', '')[:50]}")
+            stats["skipped"] += 1
         else:
             # This is a new todo - create it
-            notion.create_page(
+            page_data = notion.create_page(
                 {
                     "task": todo.get("task", ""),
                     "status": "Open",
@@ -253,6 +248,20 @@ def update_notion_db(todos: list, completions: list, notion: NotionClient) -> di
                 }
             )
             stats["created"] += 1
+
+            # Add source context as comment for traceability
+            source_context = todo.get("source_context")
+            if source_context and page_data:
+                page_id = page_data.get("id")
+                if page_id:
+                    source = todo.get("source", "unknown")
+                    # Truncate very long contexts
+                    context_text = source_context[:500] + "..." if len(source_context) > 500 else source_context
+                    comment = f"📍 Source ({source}): {context_text}"
+                    try:
+                        notion.add_comment(page_id, comment)
+                    except Exception as e:
+                        logger.warning(f"Could not add context comment: {e}")
 
     # Process completions with confidence-based status
     for completion in completions:
@@ -278,7 +287,7 @@ def update_notion_db(todos: list, completions: list, notion: NotionClient) -> di
 
     logger.info(
         f"Notion update complete. Created: {stats['created']}, "
-        f"Updated: {stats['updated']}, Completed: {stats['completed']}"
+        f"Skipped duplicates: {stats['skipped']}, Completed: {stats['completed']}"
     )
     return stats
 

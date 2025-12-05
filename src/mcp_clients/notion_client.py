@@ -12,10 +12,22 @@ logger = logging.getLogger(__name__)
 class NotionClient:
     """Client for interacting with Notion database via Notion API."""
 
-    def __init__(self):
-        """Initialize Notion client with API credentials."""
-        self.api_key = Config.NOTION_API_KEY
-        self.database_id = Config.NOTION_DATABASE_ID
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        database_id: Optional[str] = None,
+        meetings_db_id: Optional[str] = None,
+    ):
+        """Initialize Notion client with API credentials.
+
+        Args:
+            api_key: Notion API key. Falls back to Config.NOTION_API_KEY.
+            database_id: Todo database ID. Falls back to Config.NOTION_DATABASE_ID.
+            meetings_db_id: Meetings database ID. Falls back to Config.NOTION_MEETINGS_DATABASE_ID.
+        """
+        self.api_key = api_key or Config.NOTION_API_KEY
+        self.database_id = database_id or Config.NOTION_DATABASE_ID
+        self.meetings_db_id = meetings_db_id or Config.NOTION_MEETINGS_DATABASE_ID
         self.base_url = "https://api.notion.com/v1"
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -325,7 +337,7 @@ class NotionClient:
         """
         Query recent meeting notes from Notion AI meetings database.
 
-        Requires NOTION_MEETINGS_DATABASE_ID to be configured.
+        Requires meetings_db_id to be configured.
         Users must set up Notion Calendar > Matter Intelligence to redirect
         AI meeting notes to a user-controlled database.
 
@@ -335,15 +347,14 @@ class NotionClient:
         Returns:
             List of meeting notes formatted for Claude processing
         """
-        meetings_db_id = Config.NOTION_MEETINGS_DATABASE_ID
-        if not meetings_db_id:
+        if not self.meetings_db_id:
             logger.debug("NOTION_MEETINGS_DATABASE_ID not configured, skipping meetings collection")
             return []
 
         from datetime import timedelta
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
-        url = f"{self.base_url}/databases/{meetings_db_id}/query"
+        url = f"{self.base_url}/databases/{self.meetings_db_id}/query"
         payload = {
             "filter": {
                 "timestamp": "created_time",

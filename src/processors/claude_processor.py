@@ -3,7 +3,7 @@
 import logging
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
 from anthropic import Anthropic
 from config import Config
@@ -19,7 +19,14 @@ class ClaudeProcessor:
         self.client = Anthropic(api_key=Config.ANTHROPIC_API_KEY)
         self.model = "claude-opus-4-20250514"  # Using Opus 4.5
 
-    def extract_todos(self, raw_data: Dict[str, List[Any]], context: str = "") -> List[Dict[str, Any]]:
+    def extract_todos(
+        self,
+        raw_data: Dict[str, List[Any]],
+        context: str = "",
+        user_name: str = None,
+        user_email: str = None,
+        user_slack_username: str = None,
+    ) -> List[Dict[str, Any]]:
         """
         Extract structured todos from raw text content using Claude.
 
@@ -27,6 +34,9 @@ class ClaudeProcessor:
             raw_data: Dictionary with platform names as keys and list of content as values.
                       Content can be either strings (legacy) or dicts with text/source_url/source/metadata.
             context: Optional additional context
+            user_name: Override user name (defaults to Config.MY_NAME)
+            user_email: Override user email (defaults to Config.MY_EMAIL)
+            user_slack_username: Override Slack username (defaults to Config.MY_SLACK_USERNAME)
 
         Returns:
             List of extracted todo objects with source_url populated
@@ -52,10 +62,13 @@ class ClaudeProcessor:
                         # Add source ID marker so Claude can reference it
                         content_parts.append(f"[SOURCE:{source_id_counter}]\n{text}")
                         # Track metadata for direct URL lookup by source_id
+                        # Include message_ts for age filtering
+                        metadata = item.get("metadata", {})
                         source_metadata.append({
                             "source_id": source_id_counter,
                             "source_url": item.get("source_url"),
                             "source": item.get("source", platform),
+                            "message_ts": metadata.get("message_ts"),
                         })
                         source_id_counter += 1
                 else:
@@ -108,19 +121,21 @@ class ClaudeProcessor:
   (Today is {today_str}, {day_name})"""
 
         # Get user identity info for contextualized extraction
-        user_name = Config.MY_NAME.split(",")[0].strip() if Config.MY_NAME else "the user"
-        user_variations = Config.MY_NAME if Config.MY_NAME else user_name
-        slack_username = Config.MY_SLACK_USERNAME or user_name
-        user_email = Config.MY_EMAIL or ""
+        # Use parameters if provided, otherwise fall back to Config
+        config_name = Config.MY_NAME.split(",")[0].strip() if Config.MY_NAME else "the user"
+        primary_name = user_name or config_name
+        user_variations = user_name or Config.MY_NAME or primary_name
+        slack_username = user_slack_username or Config.MY_SLACK_USERNAME or primary_name
+        email_addr = user_email or Config.MY_EMAIL or ""
 
         # Build identity section
         identity_info = f"- Name variations: {user_variations}"
-        if Config.MY_SLACK_USERNAME:
-            identity_info += f"\n- Slack username: @{slack_username} (messages from this user are {user_name}'s own words)"
-        if Config.MY_EMAIL:
-            identity_info += f"\n- Email: {user_email}"
+        if slack_username:
+            identity_info += f"\n- Slack username: @{slack_username} (messages from this user are {primary_name}'s own words)"
+        if email_addr:
+            identity_info += f"\n- Email: {email_addr}"
 
-        prompt = f"""You are extracting todos specifically for {user_name}.
+        prompt = f"""You are extracting todos specifically for {primary_name}.
 
 ## User Identity
 {identity_info}
@@ -134,21 +149,21 @@ class ClaudeProcessor:
 
 Analyze each conversation or email thread as a whole. Consider the full context - who is talking to whom, what commitments are being made, and who is responsible for what.
 
-**Only return a todo if {user_name} is clearly the intended owner**, either because:
-- {user_name} agreed to do something (look for messages FROM @{slack_username})
-- {user_name} was clearly the recipient of a request or assignment, based on context
-- An email or message is directly addressed to {user_name} with an actionable ask
+**Only return a todo if {primary_name} is clearly the intended owner**, either because:
+- {primary_name} agreed to do something (look for messages FROM @{slack_username})
+- {primary_name} was clearly the recipient of a request or assignment, based on context
+- An email or message is directly addressed to {primary_name} with an actionable ask
 
-**Do not extract todos that belong to other people.** If two other people are discussing tasks between themselves, those are not {user_name}'s todos - even if {user_name} is CC'd or in the same channel/group chat.
+**Do not extract todos that belong to other people.** If two other people are discussing tasks between themselves, those are not {primary_name}'s todos - even if {primary_name} is CC'd or in the same channel/group chat.
 
-**User must be PART of the conversation.** Only extract todos from conversations where {user_name} is actually involved:
-- {user_name} sent a message in the conversation (look for @{slack_username} as the sender)
-- {user_name} was directly @-mentioned or addressed by name
-- It's a DM or email where {user_name} is a direct participant
-- The message explicitly addresses {user_name} (e.g., "Hey {user_name},", "@{slack_username}")
-If a conversation is between other people and {user_name} is just observing the channel, do NOT extract todos from it.
+**User must be PART of the conversation.** Only extract todos from conversations where {primary_name} is actually involved:
+- {primary_name} sent a message in the conversation (look for @{slack_username} as the sender)
+- {primary_name} was directly @-mentioned or addressed by name
+- It's a DM or email where {primary_name} is a direct participant
+- The message explicitly addresses {primary_name} (e.g., "Hey {primary_name},", "@{slack_username}")
+If a conversation is between other people and {primary_name} is just observing the channel, do NOT extract todos from it.
 
-**Delegation removes ownership.** If {user_name} asks someone for help and they agree to do it (e.g., "I'll take care of it", "I can handle that"), the task now belongs to that person, not {user_name}.
+**Delegation removes ownership.** If {primary_name} asks someone for help and they agree to do it (e.g., "I'll take care of it", "I can handle that"), the task now belongs to that person, not {primary_name}.
 
 **Do NOT create todos for:**
 - Calendar invites or meeting requests - these are already on the calendar
@@ -162,7 +177,7 @@ If a conversation is between other people and {user_name} is just observing the 
 
 **Prioritize personal over automated:** Distinguish between personal requests from colleagues (high value) and automated system notifications (low value). Focus on direct asks from real people, not system-generated reminders.
 
-Set the **confidence** field to reflect how certain you are that this todo belongs to {user_name} (0.0 to 1.0).
+Set the **confidence** field to reflect how certain you are that this todo belongs to {primary_name} (0.0 to 1.0).
 
 For each todo, determine:
 - task: Clear, concise description
@@ -235,6 +250,8 @@ Only return the JSON array, no additional text."""
             # Map source URLs to todos based on source and source_context matching
             if source_metadata:
                 todos = self._map_source_urls(todos, source_metadata)
+                # Filter out todos from messages older than 7 days
+                todos = self._filter_by_age(todos, source_metadata, max_days=7)
 
             logger.info(f"Extracted {len(todos)} todos from content")
             return todos
@@ -587,3 +604,58 @@ Keep it concise (3-5 sentences max)."""
 
         logger.info(f"Mapped URLs to {mapped_count}/{len(todos)} todos using source_id")
         return todos
+
+    def _filter_by_age(self, todos: List[Dict[str, Any]], source_metadata: List[Dict[str, Any]], max_days: int = 7) -> List[Dict[str, Any]]:
+        """
+        Filter out todos from messages older than max_days.
+
+        This prevents stale todos from being extracted when old messages
+        are included for thread context.
+
+        Args:
+            todos: List of extracted todos with source_id
+            source_metadata: List of source metadata with message_ts
+            max_days: Maximum age in days for a source message (default 7)
+
+        Returns:
+            Filtered list of todos from recent messages only
+        """
+        if max_days <= 0:
+            return todos
+
+        # Build lookup map: source_id -> message_ts
+        source_map = {m["source_id"]: m.get("message_ts") for m in source_metadata}
+
+        cutoff_ts = (datetime.now() - timedelta(days=max_days)).timestamp()
+        filtered = []
+        filtered_out = 0
+
+        for todo in todos:
+            source_id = todo.get("source_id")
+            if source_id is None or source_id not in source_map:
+                # No source tracking - keep the todo
+                filtered.append(todo)
+                continue
+
+            message_ts = source_map.get(source_id)
+            if message_ts is None:
+                # No timestamp - keep the todo
+                filtered.append(todo)
+                continue
+
+            try:
+                ts_float = float(message_ts)
+                if ts_float >= cutoff_ts:
+                    filtered.append(todo)
+                else:
+                    filtered_out += 1
+                    age_days = (datetime.now().timestamp() - ts_float) / 86400
+                    logger.debug(f"Filtered out stale todo ({age_days:.0f} days old): '{todo.get('task', '')[:50]}'")
+            except (ValueError, TypeError):
+                # Can't parse timestamp - keep the todo
+                filtered.append(todo)
+
+        if filtered_out > 0:
+            logger.info(f"Filtered out {filtered_out} stale todos (older than {max_days} days)")
+
+        return filtered

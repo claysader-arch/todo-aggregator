@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -9,6 +10,12 @@ from email.utils import parsedate_to_datetime
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+try:
+    from bs4 import BeautifulSoup
+    HAS_BEAUTIFULSOUP = True
+except ImportError:
+    HAS_BEAUTIFULSOUP = False
 
 from config import Config
 
@@ -23,11 +30,22 @@ class GmailClient:
     # Default Zoom email senders for re-attribution
     DEFAULT_ZOOM_SENDERS = "meetings-noreply@zoom.us,no-reply@zoom.us,noreply@zoom.us"
 
-    def __init__(self):
-        """Initialize Gmail client with OAuth credentials."""
-        self.client_id = Config.GMAIL_CLIENT_ID
-        self.client_secret = Config.GMAIL_CLIENT_SECRET
-        self.refresh_token = Config.GMAIL_REFRESH_TOKEN
+    def __init__(
+        self,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+    ):
+        """Initialize Gmail client with OAuth credentials.
+
+        Args:
+            client_id: Google OAuth client ID. Falls back to Config.GMAIL_CLIENT_ID.
+            client_secret: Google OAuth client secret. Falls back to Config.GMAIL_CLIENT_SECRET.
+            refresh_token: User's refresh token. Falls back to Config.GMAIL_REFRESH_TOKEN.
+        """
+        self.client_id = client_id or Config.GMAIL_CLIENT_ID
+        self.client_secret = client_secret or Config.GMAIL_CLIENT_SECRET
+        self.refresh_token = refresh_token or Config.GMAIL_REFRESH_TOKEN
         self._service = None
 
     def _build_message_url(self, message_id: str) -> str:
@@ -102,6 +120,49 @@ class GmailClient:
                 return header.get("value", "")
         return ""
 
+    def _html_to_text(self, html: str) -> str:
+        """
+        Convert HTML to plain text.
+
+        Uses BeautifulSoup if available, otherwise falls back to regex.
+
+        Args:
+            html: HTML content string
+
+        Returns:
+            Plain text extracted from HTML
+        """
+        if HAS_BEAUTIFULSOUP:
+            try:
+                soup = BeautifulSoup(html, 'html.parser')
+                # Remove script and style elements
+                for element in soup(['script', 'style', 'head']):
+                    element.decompose()
+                # Get text with newlines preserved
+                text = soup.get_text(separator='\n')
+                # Clean up whitespace
+                lines = [line.strip() for line in text.splitlines()]
+                return '\n'.join(line for line in lines if line)
+            except Exception as e:
+                logger.debug(f"BeautifulSoup parsing failed, using regex fallback: {e}")
+
+        # Fallback: regex-based HTML stripping
+        # Remove script/style content
+        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        # Replace common elements with newlines
+        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</tr>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
+        # Strip remaining tags
+        text = re.sub(r'<[^>]+>', ' ', text)
+        # Clean up whitespace
+        text = re.sub(r'[ \t]+', ' ', text)
+        lines = [line.strip() for line in text.splitlines()]
+        return '\n'.join(line for line in lines if line)
+
     def _get_message_body(self, payload: Dict) -> str:
         """
         Extract plain text body from message payload.
@@ -140,8 +201,9 @@ class GmailClient:
         for part in parts:
             if part.get("mimeType") == "text/html":
                 if part.get("body", {}).get("data"):
-                    # Return HTML as-is, Claude can handle it
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                    # Convert HTML to plain text for better extraction
+                    html = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                    body = self._html_to_text(html)
                     return body
 
         return body
@@ -249,8 +311,8 @@ class GmailClient:
             # Get body
             body = self._get_message_body(payload)
 
-            # Truncate very long bodies
-            max_body_length = 2000
+            # Truncate very long bodies (increased for HTML-converted emails)
+            max_body_length = 5000
             if len(body) > max_body_length:
                 body = body[:max_body_length] + "\n... [truncated]"
 
