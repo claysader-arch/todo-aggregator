@@ -147,40 +147,30 @@ This will open a browser, authenticate, and print your refresh token.
 
 ## Step 4: Zapier Setup (Required)
 
-### 4.1 Create New Zap
-1. Go to [zapier.com](https://zapier.com) and create new Zap
-2. Or use our template: [TEMPLATE_LINK]
+### 4.1 Use the Pre-Built Template
+1. Click this link: **[Todo Aggregator Zap Template](https://zapier.com/shared/775d50b86f7518bd19ecadcff141ad65844a6208)**
+2. Click **"Try this Zap"** to copy it to your account
 
-### 4.2 Configure Trigger
-- **App**: Schedule by Zapier
-- **Event**: Every Day
-- **Time**: 7:00 AM (your timezone)
-- **Day of Week**: Every day (or customize)
+### 4.2 Fill in Your Credentials
+The template is pre-configured with the correct URL, headers, and schedule. You just need to fill in your values:
 
-### 4.3 Configure Action
-- **App**: Webhooks by Zapier
-- **Event**: POST
-- **URL**: `https://todo-aggregator-[your-deployment].run.app/run`
-- **Payload Type**: JSON
-- **Headers**:
-  - `X-API-Secret`: [Your API Secret]
-  - `Content-Type`: application/json
+1. Click on the **POST** step
+2. Scroll to the **Data** section
+3. Replace the placeholder values:
 
-### 4.4 Request Body
-```json
-{
-  "slack_token": "xoxp-your-token-here",
-  "gmail_refresh_token": "1//your-refresh-token",
-  "notion_database_id": "your-database-id",
-  "user_name": "Your Name",
-  "user_email": "you@email.com",
-  "user_slack_username": "Your Slack Display Name"
-}
-```
+| Field | Replace With |
+|-------|--------------|
+| `notion_database_id` | Your Database ID from Step 1 |
+| `slack_token` | Your Slack token from Step 2 |
+| `gmail_refresh_token` | Your Gmail refresh token from Step 3 |
+| `user_name` | Your name (e.g., `Clay` or `Clay,clay,Clay Sader`) |
+| `user_email` | Your email (for error notifications) |
+| `user_slack_username` | Your Slack display name |
 
-### 4.5 Test & Enable
-1. Click "Test" to verify connection
-2. Turn on your Zap
+### 4.3 Test & Publish
+1. Click **"Test step"** to verify connection
+2. You should see: `{"status": "accepted", "message": "Aggregation queued for..."}`
+3. Click **"Publish"** to activate your Zap
 
 ---
 
@@ -499,44 +489,21 @@ python gmail_oauth_setup.py
 
 ## Step 4: Zapier Setup
 
-### 4.1 Create a New Zap
+### 4.1 Use the Pre-Built Template
 
-1. Go to **[zapier.com](https://zapier.com)** and sign in
-2. Click **"+ Create"** → **"Zaps"** → **"New Zap"**
+1. Click this link: **[Todo Aggregator Zap Template](https://zapier.com/shared/775d50b86f7518bd19ecadcff141ad65844a6208)**
+2. Click **"Try this Zap"** to copy it to your account
 
-### 4.2 Configure the Trigger
+### 4.2 Fill in Your Credentials
 
-1. Search for **"Schedule by Zapier"**
-2. Select **"Every Day"** as the trigger event
-3. Configure:
-   - **Time of Day**: `7:00 AM` (or your preferred time)
-   - **Timezone**: Your timezone
-   - **Days of Week**: Select all days (or customize)
-4. Click **"Continue"** and **"Test trigger"**
+The template is pre-configured with the correct URL, headers, and schedule. You just need to fill in your values:
 
-### 4.3 Configure the Action
+1. Click on the **POST** step
+2. Scroll to the **Data** section
+3. Replace the placeholder values:
 
-1. Click **"+"** to add an action
-2. Search for **"Webhooks by Zapier"**
-3. Select **"POST"** as the action event
-4. Configure:
-
-| Field | Value |
-|-------|-------|
-| **URL** | `https://todo-aggregator-908833572352.us-central1.run.app/run` |
-| **Payload Type** | `json` |
-
-5. Add **Headers**:
-
-| Key | Value |
-|-----|-------|
-| `X-API-Secret` | `[Ask Clay for the API secret]` |
-| `Content-Type` | `application/json` |
-
-6. Add **Data** fields:
-
-| Key | Value |
-|-----|-------|
+| Field | Replace With |
+|-------|--------------|
 | `notion_database_id` | Your Database ID from Step 1 |
 | `slack_token` | Your Slack token from Step 2 |
 | `gmail_refresh_token` | Your Gmail refresh token from Step 3 |
@@ -544,13 +511,10 @@ python gmail_oauth_setup.py
 | `user_email` | Your email (for error notifications) |
 | `user_slack_username` | Your Slack display name |
 
-### 4.4 Test & Publish
+### 4.3 Test & Publish
 
 1. Click **"Test step"** to verify the connection
-2. If successful, you'll see a response like:
-   ```json
-   {"created": 0, "skipped": 0, "completed": 0, "duration_seconds": 5.2}
-   ```
+2. You should see: `{"status": "accepted", "message": "Aggregation queued for..."}`
 3. Click **"Publish"** to activate your Zap
 
 ---
